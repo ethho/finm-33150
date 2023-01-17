@@ -24,62 +24,93 @@ def infer_date_col(cols: List[str], matches=DATE_COLS) -> Union[str, None]:
 @dataclass
 class TimeSeriesBase():
     dt: datetime
-    
+
     @property
     def df(self):
         return self._get_df()
-    
+
     def _get_df(self):
         assert getattr(self, '_records'), (
             f"'{self.__class__.__name__}' has no recorded data"
         )
-        df = pd.DataFrame(
-            data=self._records
-        )
+        df = pd.DataFrame(data=self._records)
         assert 'dt' in df.columns, f"'{self.__class__.__name__}' has no attribute 'dt'"
         df['dt'] = pd.to_datetime(df['dt'])
         df.set_index('dt', inplace=True)
         df.sort_index(inplace=True)
         return df
-    
+
     def record(self):
         if not hasattr(self, '_records'):
             self._records = list()
         self._records.append(asdict(self))
 
-    def _records_from_df(self, df):
-        if not hasattr(self, '_records'):
-            self._records = list()
-        self._records.extend(
-            df.to_dict(orient='records')
+    def get_prev(self) -> Dict:
+        as_dict = self.df.loc[:self.dt, :].to_dict(orient='records')
+        assert as_dict, (
+            f"no records before {self.dt} exist in instance "
+            f"of {self.__class__.__name__} (first is {self.df.index[0]})"
         )
+        return as_dict[-1]
 
-    # def load(self):
-    #     df = self.in_df
-    #     as_dict = df.loc[self.dt, :].to_dict(orient='records')
-    #     assert as_dict, f"no rows exist in 'in_df' with index dt={self.dt}"
-    #     for k, v in as_dict.items():
-    #         setattr(self, k, v)
-    #     return self
+    def get_next(self) -> Dict:
+        as_dict = self.df.loc[self.dt:, :].to_dict(orient='records')
+        assert as_dict, (
+            f"no records after {self.dt} exist in instance "
+            f"of {self.__class__.__name__} (latest is {self.df.index[-1]})"
+        )
+        return as_dict[0]
 
-    def _set_in_df(self, df: pd.DataFrame):
+    def set_from_prev(self):
+        as_dict: Dict = self.get_prev()
+        self._set_from_dict(as_dict)
+
+    def set_from_next(self):
+        as_dict: Dict = self.get_next()
+        self._set_from_dict(as_dict)
+
+    def _set_from_dict(self, d: Dict):
+        for k, v in d.items():
+            if not hasattr(self, k):
+                logger.warning(f"setting value of attribute {k=} which does "
+                               f"not exist in instance of {self.__class__.__name__}")
+            setattr(self, k, v)
+
+    def _record_from_df(self, df: pd.DataFrame):
         date_col = infer_date_col(df.columns)
         if date_col is None:
             logger.warning(f"could not find a date-like column in columns={df.columns}")
         else:
             df.rename(columns={date_col: 'dt'}, inplace=True)
-        self._records_from_df(df)
-        self.in_df = df
 
-    def in_df_from_df(self, df):
-        self._set_in_df(df.copy())
+        # Set records from df
+        if not hasattr(self, '_records'):
+            self._records = list()
+        as_dict: List[Dict] = df.to_dict(orient='records')
+        if isinstance(as_dict, Dict):
+            as_dict = [as_dict]
+        self._records.extend(as_dict)
+        self._in_df = df
 
-    def in_df_from_file(self, fp: str, **kw):
+    def record_from_df(self, df):
+        self._record_from_df(df.copy())
+
+    def record_from_csv(self, fp: str, **kw):
         df = pd.read_csv(fp, **kw)
-        self._set_in_df(df)
+        self._record_from_df(df)
 
-    def in_df_to_now(self) -> pd.DataFrame:
-        return self.in_df.loc[:self.dt, :]
+    @classmethod
+    def from_df(cls, df: pd.DataFrame, *args, **kw):
+        inst = cls(*args, dt=np.datetime64(None), **kw)
+        inst.record_from_df(df)
+        return inst
+
+    @classmethod
+    def from_csv(cls, fp: str, *args, **kw):
+        inst = cls(*args, dt=np.datetime64(None), **kw)
+        inst.record_from_csv(fp)
+        return inst
+
 
 
 class PlotlyPlotter:
@@ -103,10 +134,6 @@ class PlotlyPlotter:
         dict(dtickrange=["M1", "M12"], value="%b '%y M"),
         dict(dtickrange=["M12", None], value="%Y Y")
     ]
-    
-    def __init__(self):
-        # super(FooBar, self).__init__()
-        pass
 
     def plot(self, *args, **kw):
         return self._plot(in_df=self.df, *args, **kw)
