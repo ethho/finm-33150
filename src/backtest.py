@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 from typing import Dict, List, Optional, Union
 from datetime import datetime, timedelta
 import numpy as np
@@ -16,6 +17,12 @@ DATE_COLS = ('date',)
 
 def cls_name(self):
     return self.__class__.__name__
+
+
+def sha1(d: Dict, maxlen=7) -> str:
+    return hashlib.sha1(
+        json.dumps(d, sort_keys=True).encode('utf-8')
+    ).hexdigest()[:maxlen]
 
 
 def pd_to_native_dtype(dtype):
@@ -79,15 +86,24 @@ class FeedBase():
             f"no records after {self.dt} exist in instance "
             f"of {cls_name(self)} (latest is {self.df.index[-1]})"
         )
+        breakpoint()
         return as_dict[0]
 
+    def get_first(self) -> Dict:
+        as_ser = self.df.iloc[0, :]
+        as_dict = as_ser.to_dict()
+        assert as_dict, (f"no records exist in instance of {cls_name(self)}")
+        as_dict[self.df.index.name] = as_ser.name
+        return as_dict
+
     def set_from_prev(self):
-        as_dict: Dict = self.get_prev()
-        self._set_from_dict(as_dict)
+        self._set_from_dict(self.get_prev())
 
     def set_from_next(self):
-        as_dict: Dict = self.get_next()
-        self._set_from_dict(as_dict)
+        self._set_from_dict(self.get_next())
+
+    def set_from_first(self):
+        self._set_from_dict(self.get_first())
 
     def _set_from_dict(self, d: Dict):
         for k, v in d.items():
@@ -105,13 +121,13 @@ class FeedBase():
 
         # Add fields that are not in the current dataclass
         fields_to_add = list()
-        for field in df.columns:
-            if field not in self.__dataclass_fields__.keys():
-                dtype = pd_to_native_dtype(df.dtypes[field])
-                fields_to_add.append((field, dtype))
+        for col in df.columns:
+            if col not in self.__dataclass_fields__.keys():
+                dtype = pd_to_native_dtype(df.dtypes[col])
+                fields_to_add.append((col, dtype, field(default=dtype())))
         if fields_to_add:
-            field_names = sorted([field[0] for field in fields_to_add])
-            cls_name = json.dumps(field_names)
+            field_names = [col[0] for col in fields_to_add]
+            cls_name = f"Feed_{sha1(field_names)}"
             self.__class__ = make_dataclass(cls_name, fields=fields_to_add, bases=(FeedBase,))
 
         # Set records from df
@@ -122,12 +138,15 @@ class FeedBase():
             as_dict = [as_dict]
         self._records.extend(as_dict)
         self._in_df = df
+        self.set_from_first()
 
     def record_from_df(self, df):
         self._record_from_df(df.copy())
 
-    def record_from_csv(self, fp: str, **kw):
+    def record_from_csv(self, fp: str, rename: Union[Dict, None] = None, **kw):
         df = pd.read_csv(fp, **kw)
+        if rename:
+            df.rename(columns=rename, inplace=True)
         self._record_from_df(df)
 
     @classmethod
@@ -203,8 +222,7 @@ class PlotlyPlotter:
 class StrategyBase(object):
 
     def __init__(self):
-        # super(Opportunity, self).__init__()
-        pass
+        self.feeds: Dict[str, FeedBase] = dict()
 
     def step(self):
         raise NotImplementedError(
@@ -216,15 +234,17 @@ class ClockBase(object):
 
     def __init__(self, dti: pd.DatetimeIndex):
         self.dti = dti
-        self.dt = self.dti[0]
+        self.i = 0
+        self.dt = self.dti[self.i]
 
     @property
     def name(self) -> Union[str, None]:
         return getattr(self.dti, 'name', None)
 
     def step(self):
-        # TODO: can we next(self.dti) ?
-        breakpoint()
+        self.i += 1
+        self.dt = self.dti[self.i]
+        # TODO: return NaT or None if step out of bounds
         return self.dt
 
 
@@ -291,9 +311,11 @@ class BacktestEngine(object):
     def run(self):
         # Pass all feeds to all strats
         for strat in self._strats.values():
-            strat.feeds.extend(self._feeds)
+            strat.feeds.update(self._feeds)
 
-        breakpoint()
+        self.step()
+        while not pd.isnull(self.dt):
+            self.step()
 
     def step(self):
         # Tick main clock
@@ -320,7 +342,7 @@ class BasicStrategy(StrategyBase):
     def step(self):
         if self.feeds['prices'].AAPL < 1.0:
             self.buy(shares=1.)
-        elif self.feeds['prices'].AAPL > 2.0:
+        elif self.feeds['prices'].AAPL > 1.5:
             self.sell(shares=1.)
 
         if self.dt >= pd.to_datetime('2022-01-01'):
