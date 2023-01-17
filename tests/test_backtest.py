@@ -1,13 +1,14 @@
 import pytest
 import pandas as pd
 import plotly.express as px
-from backtest import PriceSeries
+from backtest import PriceFeed, BacktestEngine, BasicStrategy
 
-class TestPriceSeries:
+
+class TestPriceFeed:
     
     def test_construct(self):
         # Construct and populate with values
-        ps = PriceSeries('2020-01-01', float('nan'))
+        ps = PriceFeed('2020-01-01', float('nan'))
         ps.dt = '2021-01-01'
         ps.price = 3.
         ps.record()
@@ -28,7 +29,7 @@ class TestPriceSeries:
 
     def test_set_from_dataframe(self):
         df = px.data.stocks()
-        ps = PriceSeries('2020-01-01', float('nan'))
+        ps = PriceFeed('2020-01-01', float('nan'))
         ps.record_from_df(df)
         out_df = ps.df
         out_df.reset_index(inplace=True)
@@ -40,6 +41,20 @@ class TestPriceSeries:
         df = px.data.stocks()
         fp = '/tmp/foobarbaz.csv'
         df.to_csv(fp, index=False)
-        ps = PriceSeries.from_csv(fp, price=None)
+        ps = PriceFeed.from_csv(fp, price=None)
         ps.get_prev()
-        
+
+
+class TestRunStrategy:
+
+    def test_run(self):
+        be = BacktestEngine(
+            start_date='2020-01-01',
+            end_date='2022-12-01',
+        )
+        feed1 = PriceFeed.from_df(px.data.stocks())
+        be.add_feed(feed1, name='prices')
+        breakpoint()
+        strat1 = BasicStrategy()
+        be.add_strategy(strat1)
+        be.run()
