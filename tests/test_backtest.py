@@ -5,7 +5,7 @@ from backtest import PriceFeed, BacktestEngine, BasicStrategy
 
 
 class TestPriceFeed:
-    
+
     def test_construct(self):
         # Construct and populate with values
         ps = PriceFeed('2020-01-01', float('nan'))
@@ -23,7 +23,7 @@ class TestPriceFeed:
         assert ps.get_prev()['price'] == 4.
         ps.record()
         df = ps.df
-        
+
         # Can plot using plotly express
         ps.plot(show=False)
 
@@ -36,7 +36,7 @@ class TestPriceFeed:
         out_df.rename(columns=dict(dt='date'), inplace=True)
         df['date'] = pd.to_datetime(df['date'])
         pd.testing.assert_frame_equal(df, out_df, check_dtype=False, check_index_type=False)
-    
+
     def test_construct_from_csv(self):
         df = px.data.stocks()
         fp = '/tmp/foobarbaz.csv'
@@ -49,8 +49,8 @@ class TestRunStrategy:
 
     def test_run(self):
         be = BacktestEngine(
-            start_date='2020-01-01',
-            end_date='2023-12-01',
+            start_date='2018-01-01',
+            end_date='2019-12-01',
         )
         feed1 = PriceFeed.from_df(px.data.stocks())
         be.add_feed(feed1, name='price')
@@ -59,4 +59,5 @@ class TestRunStrategy:
         be.add_strategy(strat1)
         be.run()
 
-        feed1.plot(show=True)
+        feed1.plot(show=False)
+        strat1.positions[0].plot(show=True, include_cols=['price', 'returns', 'is_open'])

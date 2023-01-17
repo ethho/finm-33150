@@ -69,7 +69,7 @@ class FeedBase():
         return self._get_df()
 
     def _get_df(self):
-        assert getattr(self, '_records'), (
+        assert getattr(self, '_records', None), (
             f"'{cls_name(self)}' has no recorded data"
         )
         df = pd.DataFrame(data=self._records)
@@ -91,6 +91,8 @@ class FeedBase():
             return True
         elif self.dt > self._in_df_last_dt:
             return False
+        else:
+            return True
 
     def get_prev(self) -> Dict:
         as_dict = self.df.loc[:self.dt, :].to_dict(orient='records')
@@ -217,20 +219,37 @@ class PlotlyPlotter:
         dict(dtickrange=["M12", None], value="%Y Y")
     ]
 
-    def plot(self, *args, exclude_cols=('name', ), **kw):
-        return self._plot(in_df=self.df, *args, exclude_cols=('name',), **kw)
+    def plot(self, *args, exclude_cols=('name', ), include_cols=None, **kw):
+        try:
+            return self._plot(
+                in_df=self.df, *args, exclude_cols=exclude_cols,
+                include_cols=include_cols, **kw
+            )
+        except ValueError as err:
+            if 'columns of different type' in str(err):
+                raise Exception(
+                    f"Plotly Express could not plot DataFrame with "
+                    f"columns={self.df.columns.tolist()}. Try passing "
+                    f"`exclude_cols`, especially for string or object dtypes."
+                )
 
     def _plot(
         self, in_df: pd.DataFrame,
         date_col="dt",
         title=None,
         exclude_cols=('name',),
+        include_cols=None,
         height=600, width=800,
         labels: Dict = None,
         show: bool = True,
     ):
         df = in_df.reset_index()
         df.drop(columns=list(exclude_cols), errors='ignore', inplace=True)
+        if include_cols:
+            df = df.loc[:, list(include_cols) + [date_col]]
+            assert not df.empty
+            if len(include_cols) == 1 and isinstance(df, pd.Series):
+                df = df.to_frame(name=include_cols[0])
         fig = px.line(
             df, x=date_col, y=df.columns,
             hover_data={date_col: "|%B %d, %Y"},
@@ -255,31 +274,58 @@ class PriceFeed(FeedBase, PlotlyPlotter):
 
 
 @dataclass
-class PositionBase(object):
+class PositionBase(FeedBase, PlotlyPlotter):
     nshares: float
     feed: PriceFeed
     feed_id: FeedID
     symbol: str
-    is_open: bool = True
+    is_open: int = 1
+    price: float = None
+    value: float = 0.
+    returns: float = 0.
     price_at_open: float = field(init=False)
     open_dt: np.datetime64 = field(init=False)
+    dt: np.datetime64 = field(init=False) # do not use
 
     def __post_init__(self):
-        self.price_at_open = self.price
+        self.price_at_open = self.get_price()
         self.open_dt = self.feed.dt
+        self.get_dt()
 
     def close(self):
-        self.is_open = False
+        self.is_open = 0
+
+    def get_dt(self):
+        self.dt = self.feed.dt
+        return self.dt
+
+    def get_price(self):
+        self.price = getattr(self.feed, self.feed_id.field)
+        return self.price
+
+    def get_value(self):
+        # TODO: prevent change after close
+        self.value = self.price * self.nshares * self.is_open
+        return self.value
+
+    def get_returns(self):
+        if not self.is_open:
+            logger.warning(f"refusing to update returns of a closed position")
+            return
+        self.returns = self.value - (self.price_at_open * self.nshares)
+        return self.value
 
     @property
-    def price(self):
-        # TODO: prevent change after close
-        return getattr(self.feed, self.feed_id.field)
+    def days_open(self):
+        return (self.dt - self.open_dt).days
 
-    @property
-    def returns(self):
-        # TODO: prevent change after close
-        return self.price * self.nshares
+    def update(self):
+        self.get_dt()
+        self.get_price()
+        self.get_value()
+        if self.is_open:
+            self.get_returns()
+            self.record()
 
 
 class StrategyBase(object):
@@ -287,6 +333,10 @@ class StrategyBase(object):
     def __init__(self):
         self.feeds: Dict[str, FeedBase] = dict()
         self.positions: List[PositionBase] = list()
+
+    def _pre_step(self):
+        for pos in self.positions:
+            pos.update()
 
     def step(self):
         raise NotImplementedError(
@@ -296,11 +346,11 @@ class StrategyBase(object):
 
     @property
     def long_positions(self) -> List[PositionBase]:
-        return [pos for pos in self.positions if pos.nshares > 0.]
+        return [pos for pos in self.positions if pos.nshares > 0. and pos.is_open]
 
     @property
     def short_positions(self) -> List[PositionBase]:
-        return [pos for pos in self.positions if pos.nshares < 0.]
+        return [pos for pos in self.positions if pos.nshares < 0. and pos.is_open]
 
     def _transact(
         self, symbol: str, nshares: float, feed_id: Union[FeedID, None] = None
@@ -329,6 +379,12 @@ class StrategyBase(object):
 
     def sell(self, nshares: float, *args, **kw):
         return self._transact(*args, nshares=-nshares, **kw)
+
+    def is_long(self):
+        return any(self.long_positions)
+
+    def is_short(self):
+        return any(self.short_positions)
 
     def exit_all(self):
         raise NotImplementedError()
@@ -427,6 +483,8 @@ class BacktestEngine(object):
                 self.dt = clock.step()
             else:
                 raise NotImplementedError()
+        if pd.isnull(self.dt):
+            return
 
         # Update all feeds
         for feedn, feed in self._feeds.items():
@@ -435,6 +493,7 @@ class BacktestEngine(object):
 
         # Iterate over strategies
         for stratn, strat in self._strats.items():
+            strat._pre_step()
             if isinstance(getattr(strat, 'pre_step', None), Callable):
                 strat.pre_step()
             strat.step()
@@ -449,8 +508,13 @@ class BasicStrategy(StrategyBase):
     def step(self):
         aapl = self.feeds['price'].AAPL
         if aapl is None:
-            pass
-        elif aapl < 1.0:
+            return
+        elif aapl < 1.0 and not self.is_long():
             self.buy(nshares=1., symbol='AAPL')
-        elif aapl > 1.5:
+        elif aapl > 1.2 and not self.is_short():
             self.sell(nshares=1., symbol='AAPL')
+
+        if self.is_long():
+            pos = self.long_positions[0]
+            if pos.days_open >= 30:
+                pos.close()
