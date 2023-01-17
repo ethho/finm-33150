@@ -5,6 +5,20 @@ from dataclasses import dataclass, field, asdict
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger()
+
+DATE_COLS = ('date',)
+
+
+def infer_date_col(cols: List[str], matches=DATE_COLS) -> Union[str, None]:
+    for col_raw in cols:
+        col = col_raw.lower().replace(' ', '').strip()
+        if col in matches:
+            return col_raw
+    return None
 
 
 @dataclass
@@ -33,15 +47,39 @@ class TimeSeriesBase():
             self._records = list()
         self._records.append(asdict(self))
 
-    def load(self):
-        df = self.in_df
-        as_dict = df.loc[self.dt, :].todict(orient='records')
-        for k, v in as_dict.items():
-            setattr(self, k, v)
-        return self
+    def _records_from_df(self, df):
+        if not hasattr(self, '_records'):
+            self._records = list()
+        self._records.extend(
+            df.to_dict(orient='records')
+        )
 
-    def set_in_df(self, df: pd.DataFrame):
+    # def load(self):
+    #     df = self.in_df
+    #     as_dict = df.loc[self.dt, :].to_dict(orient='records')
+    #     assert as_dict, f"no rows exist in 'in_df' with index dt={self.dt}"
+    #     for k, v in as_dict.items():
+    #         setattr(self, k, v)
+    #     return self
+
+    def _set_in_df(self, df: pd.DataFrame):
+        date_col = infer_date_col(df.columns)
+        if date_col is None:
+            logger.warning(f"could not find a date-like column in columns={df.columns}")
+        else:
+            df.rename(columns={date_col: 'dt'}, inplace=True)
+        self._records_from_df(df)
         self.in_df = df
+
+    def in_df_from_df(self, df):
+        self._set_in_df(df.copy())
+
+    def in_df_from_file(self, fp: str, **kw):
+        df = pd.read_csv(fp, **kw)
+        self._set_in_df(df)
+
+    def in_df_to_now(self) -> pd.DataFrame:
+        return self.in_df.loc[:self.dt, :]
 
 
 class PlotlyPlotter:
@@ -81,7 +119,6 @@ class PlotlyPlotter:
         labels: Dict = None,
         show: bool = True,
     ):
-        """description"""
         df = in_df.reset_index()
         fig = px.line(
             df, x=date_col, y=df.columns,
