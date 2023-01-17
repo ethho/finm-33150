@@ -60,4 +60,4 @@ class TestRunStrategy:
         be.run()
 
         feed1.plot(show=False)
-        strat1.positions[0].plot(show=True, include_cols=['price', 'returns', 'is_open'])
+        strat1.positions[0].plot(show=False, include_cols=['price', 'returns', 'is_open'])

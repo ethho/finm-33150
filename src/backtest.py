@@ -276,7 +276,7 @@ class PriceFeed(FeedBase, PlotlyPlotter):
 @dataclass
 class PositionBase(FeedBase, PlotlyPlotter):
     nshares: float
-    feed: PriceFeed
+    feed: PriceFeed = field(repr=False)
     feed_id: FeedID
     symbol: str
     is_open: int = 1
@@ -304,20 +304,23 @@ class PositionBase(FeedBase, PlotlyPlotter):
         return self.price
 
     def get_value(self):
-        # TODO: prevent change after close
-        self.value = self.price * self.nshares * self.is_open
+        self.value = self.get_price() * self.nshares * self.is_open
         return self.value
 
     def get_returns(self):
         if not self.is_open:
             logger.warning(f"refusing to update returns of a closed position")
             return
-        self.returns = self.value - (self.price_at_open * self.nshares)
+        self.returns = self.get_value() - (self.price_at_open * self.nshares)
         return self.value
 
     @property
-    def days_open(self):
-        return (self.dt - self.open_dt).days
+    def days_open(self) -> int:
+        return (self.get_dt() - self.open_dt).days
+
+    @property
+    def is_long(self) -> bool:
+        return bool(self.nshares >= 0)
 
     def update(self):
         self.get_dt()
@@ -328,11 +331,33 @@ class PositionBase(FeedBase, PlotlyPlotter):
             self.record()
 
 
-class StrategyBase(object):
+@dataclass
+class StrategyBase(FeedBase, PlotlyPlotter):
+    feeds: Dict[str, FeedBase] = field(default_factory=dict)
+    positions: List[PositionBase] = field(default_factory=list)
+    value: float = 0.
+    returns: float = 0.
+    is_active: int = 0
+    price_at_open: float = field(init=False)
+    open_dt: np.datetime64 = field(init=False)
+    dt: np.datetime64 = field(init=False) # do not use
 
-    def __init__(self):
-        self.feeds: Dict[str, FeedBase] = dict()
-        self.positions: List[PositionBase] = list()
+    def update(self):
+        self.get_value()
+        self.get_returns()
+
+    def get_value(self) -> float:
+        self.value = sum(
+            pos.get_value() for pos in self.positions if pos.is_open
+        ) * self.is_active
+        return self.value
+    
+    def get_returns(self) -> float:
+        if not self.is_active:
+            logger.warning(f"refusing to update returns of a inactive strategy")
+            return float('nan')
+        self.returns = sum(pos.get_returns() for pos in self.positions if pos.is_open)
+        return self.returns
 
     def _pre_step(self):
         for pos in self.positions:
@@ -361,8 +386,17 @@ class StrategyBase(object):
                 symbol=symbol, feeds=self.feeds)
         assert feed_id is not None
 
-        # TODO: determine if opposite position exists and close the
+        # Determine if opposite position exists and close the
         # existing before opening
+        going_long = bool(nshares >= 0.)
+        pos_sorted = self._get_positions(
+            symbol, long_only=(not going_long), short_only=going_long)
+        if pos_sorted:
+            if going_long:
+                counter_pos = pos_sorted[-1]
+            else:
+                counter_pos = pos_sorted[0]
+        breakpoint()
 
         pos = PositionBase(
             symbol=symbol,
@@ -372,7 +406,27 @@ class StrategyBase(object):
         )
         self.positions.append(pos)
         logger.info(f"Opened position {pos}")
-        # breakpoint()
+
+    def _get_positions(
+        self, symbol: Union[str, None] = None,
+        long_only: bool = False,
+        short_only: bool = False,
+    ) -> List[PositionBase]:
+        """
+        Return list of positions in descending order of current value.
+        Passing `symbol` will filter to only positions on that symbol.
+        """
+        out = sorted([
+            pos for pos in self.positions
+            if pos.is_open and symbol in (None, pos.symbol)
+        ], key=lambda x: x.get_value(), reverse=True)
+        assert not (long_only and short_only), (
+            f"can only specify one of long_only or short_only")
+        if long_only:
+            out = [pos for pos in out if pos.is_long]
+        elif short_only:
+            out = [pos for pos in out if not pos.is_long]
+        return out
 
     def buy(self, *args, **kw):
         return self._transact(*args, **kw)
