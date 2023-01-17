@@ -53,7 +53,7 @@ class TestRunStrategy:
             end_date='2022-12-01',
         )
         feed1 = PriceFeed.from_df(px.data.stocks())
-        be.add_feed(feed1, name='prices')
+        be.add_feed(feed1, name='price')
         assert len(be._feeds) == 1
         strat1 = BasicStrategy()
         be.add_strategy(strat1)

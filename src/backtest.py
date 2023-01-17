@@ -1,7 +1,8 @@
 import os
 import json
 import hashlib
-from typing import Dict, List, Optional, Union
+from collections import namedtuple
+from typing import Dict, List, Optional, Union, Tuple, Callable, Any
 from datetime import datetime, timedelta
 import numpy as np
 from dataclasses import dataclass, field, asdict, make_dataclass
@@ -14,9 +15,19 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__file__)
 
 DATE_COLS = ('date',)
+FeedID = namedtuple('FeedID', ('name', 'field'))
 
 def cls_name(self):
     return self.__class__.__name__
+
+
+def infer_price_feed_id(symbol: str, feeds: Dict[str, Any]) -> Union[FeedID, None]:
+    # TODO
+    for feed_name, feed in feeds.items():
+        if feed_name == 'price':
+            if hasattr(feed, symbol):
+                return FeedID(feed_name, symbol)
+    return None
 
 
 def sha1(d: Dict, maxlen=7) -> str:
@@ -219,16 +230,88 @@ class PlotlyPlotter:
         return fig
 
 
+@dataclass
+class PriceFeed(FeedBase, PlotlyPlotter):
+    price: float = float('nan')
+    name: str = 'price'
+
+
+@dataclass
+class PositionBase(object):
+    nshares: float
+    feed: PriceFeed
+    feed_id: FeedID
+    symbol: str
+    is_open: bool = True
+    price_at_open: float = field(init=False)
+    open_dt: np.datetime64 = field(init=False)
+
+    def __post_init__(self):
+        self.price_at_open = self.price
+        self.open_dt = self.feed.dt
+
+    def close(self):
+        self.is_open = False
+
+    @property
+    def price(self):
+        return getattr(self.feed, self.feed_id.field)
+
+    @property
+    def returns(self):
+        return self.price * self.nshares
+
+
 class StrategyBase(object):
 
     def __init__(self):
         self.feeds: Dict[str, FeedBase] = dict()
+        self.positions: List[PositionBase] = list()
 
     def step(self):
         raise NotImplementedError(
             f"method 'step' is a virtual method and should be implemented "
             f"in subclass"
         )
+
+    @property
+    def long_positions(self) -> List[PositionBase]:
+        return [pos for pos in self.positions if pos.nshares > 0.]
+
+    @property
+    def short_positions(self) -> List[PositionBase]:
+        return [pos for pos in self.positions if pos.nshares < 0.]
+
+    def _transact(
+        self, symbol: str, nshares: float, feed_id: Union[FeedID, None] = None
+    ):
+        # Get the data feed associated with this trade
+        if feed_id is None:
+            feed_id: Union[FeedID, None] = infer_price_feed_id(
+                symbol=symbol, feeds=self.feeds)
+        assert feed_id is not None
+
+        # TODO: determine if opposite position exists and close the
+        # existing before opening
+
+        pos = PositionBase(
+            symbol=symbol,
+            nshares=nshares,
+            feed=self.feeds[feed_id.name],
+            feed_id=feed_id,
+        )
+        self.positions.append(pos)
+        logger.info(f"Opened position {pos}")
+
+    def buy(self, *args, **kw):
+        return self._transact(*args, **kw)
+
+    def sell(self, nshares: float, *args, **kw):
+        return self._transact(*args, nshares=-nshares, **kw)
+
+    def exit_all(self):
+        raise NotImplementedError()
+
 
 class ClockBase(object):
 
@@ -243,15 +326,11 @@ class ClockBase(object):
 
     def step(self):
         self.i += 1
+        if self.i >= len(self.dti):
+            # return None out of bounds
+            return None
         self.dt = self.dti[self.i]
-        # TODO: return NaT or None if step out of bounds
         return self.dt
-
-
-@dataclass
-class PriceFeed(FeedBase, PlotlyPlotter):
-    price: float = float('nan')
-    name: str = 'prices'
 
 
 class BacktestEngine(object):
@@ -261,10 +340,6 @@ class BacktestEngine(object):
         output: Dict[str, str] = None,
         normalize_to_midnight: bool = True,
     ):
-        # step_val = int(step_size[:-1])
-        # step_unit = step_size[-1]
-        # self.step_size = pd.to_timedelta(step_val, step_unit)
-
         # Containers for feeds and strategies
         self._feeds: Dict[str, FeedBase] = dict()
         self._strats: Dict[str, StrategyBase] = dict()
@@ -332,7 +407,11 @@ class BacktestEngine(object):
 
         # Iterate over strategies
         for stratn, strat in self._strats.items():
+            if isinstance(getattr(strat, 'pre_step', None), Callable):
+                strat.pre_step()
             strat.step()
+            if isinstance(getattr(strat, 'post_step', None), Callable):
+                strat.post_step()
 
         # TODO: record stuff using FeedBase
 
@@ -340,10 +419,7 @@ class BacktestEngine(object):
 class BasicStrategy(StrategyBase):
 
     def step(self):
-        if self.feeds['prices'].AAPL < 1.0:
-            self.buy(shares=1.)
-        elif self.feeds['prices'].AAPL > 1.5:
-            self.sell(shares=1.)
-
-        if self.dt >= pd.to_datetime('2022-01-01'):
-            self.exit_all()
+        if self.feeds['price'].AAPL < 1.0:
+            self.buy(nshares=1., symbol='AAPL')
+        elif self.feeds['price'].AAPL > 1.5:
+            self.sell(nshares=1., symbol='AAPL')
