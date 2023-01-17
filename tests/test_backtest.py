@@ -50,7 +50,7 @@ class TestRunStrategy:
     def test_run(self):
         be = BacktestEngine(
             start_date='2020-01-01',
-            end_date='2022-12-01',
+            end_date='2023-12-01',
         )
         feed1 = PriceFeed.from_df(px.data.stocks())
         be.add_feed(feed1, name='price')
@@ -58,3 +58,5 @@ class TestRunStrategy:
         strat1 = BasicStrategy()
         be.add_strategy(strat1)
         be.run()
+
+        feed1.plot(show=True)

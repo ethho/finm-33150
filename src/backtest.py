@@ -12,7 +12,8 @@ import plotly.graph_objects as go
 import logging
 
 logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__file__)
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 DATE_COLS = ('date',)
 FeedID = namedtuple('FeedID', ('name', 'field'))
@@ -83,13 +84,25 @@ class FeedBase():
             self._records = list()
         self._records.append(asdict(self))
 
+    def in_df_bounds(self) -> bool:
+        if not hasattr(self, '_in_df_last_dt'):
+            return True
+        elif not self.dt:
+            return True
+        elif self.dt > self._in_df_last_dt:
+            return False
+
     def get_prev(self) -> Dict:
         as_dict = self.df.loc[:self.dt, :].to_dict(orient='records')
         assert as_dict, (
             f"no records before {self.dt} exist in instance "
             f"of {cls_name(self)} (first is {self.df.index[0]})"
         )
-        return as_dict[-1]
+        last_dict = as_dict[-1]
+        if not self.in_df_bounds():
+            for k in last_dict:
+                last_dict[k] = None
+        return last_dict
 
     def get_next(self) -> Dict:
         as_dict = self.df.loc[self.dt:, :].to_dict(orient='records')
@@ -97,8 +110,11 @@ class FeedBase():
             f"no records after {self.dt} exist in instance "
             f"of {cls_name(self)} (latest is {self.df.index[-1]})"
         )
-        breakpoint()
-        return as_dict[0]
+        first_dict = as_dict[0]
+        if not self.in_df_bounds():
+            for k in first_dict:
+                first_dict[k] = None
+        return first_dict
 
     def get_first(self) -> Dict:
         as_ser = self.df.iloc[0, :]
@@ -139,7 +155,8 @@ class FeedBase():
         if fields_to_add:
             field_names = [col[0] for col in fields_to_add]
             cls_name = f"Feed_{sha1(field_names)}"
-            self.__class__ = make_dataclass(cls_name, fields=fields_to_add, bases=(FeedBase,))
+            self.__class__ = make_dataclass(
+                cls_name, fields=fields_to_add, bases=(FeedBase, PlotlyPlotter))
 
         # Set records from df
         if not hasattr(self, '_records'):
@@ -149,6 +166,7 @@ class FeedBase():
             as_dict = [as_dict]
         self._records.extend(as_dict)
         self._in_df = df
+        self._in_df_last_dt = pd.to_datetime(df['dt'].max())
         self.set_from_first()
 
     def record_from_df(self, df):
@@ -255,10 +273,12 @@ class PositionBase(object):
 
     @property
     def price(self):
+        # TODO: prevent change after close
         return getattr(self.feed, self.feed_id.field)
 
     @property
     def returns(self):
+        # TODO: prevent change after close
         return self.price * self.nshares
 
 
@@ -302,6 +322,7 @@ class StrategyBase(object):
         )
         self.positions.append(pos)
         logger.info(f"Opened position {pos}")
+        # breakpoint()
 
     def buy(self, *args, **kw):
         return self._transact(*args, **kw)
@@ -357,6 +378,13 @@ class BacktestEngine(object):
         # TODO: define output feed
 
         self.dt = None
+
+    @property
+    def positions(self) -> List[PositionBase]:
+        positions = list()
+        for strat in getattr(self, '_strats', list()):
+            positions.extend(strat.positions)
+        return positions
 
     def add_feed(self, feed: FeedBase, name=None):
         if name is None:
@@ -419,7 +447,10 @@ class BacktestEngine(object):
 class BasicStrategy(StrategyBase):
 
     def step(self):
-        if self.feeds['price'].AAPL < 1.0:
+        aapl = self.feeds['price'].AAPL
+        if aapl is None:
+            pass
+        elif aapl < 1.0:
             self.buy(nshares=1., symbol='AAPL')
-        elif self.feeds['price'].AAPL > 1.5:
+        elif aapl > 1.5:
             self.sell(nshares=1., symbol='AAPL')
