@@ -339,10 +339,12 @@ class PlotlyPlotter:
         date_col="dt",
         title=None,
         exclude_cols=('name',),
+        only_numeric=True,
         include_cols=None,
         scale_cols: Dict[str, float] = None,
         height=600, width=800,
-        labels: Dict = None,
+        labels: Optional[Dict] = None,
+        names: Optional[Dict] = None,
         show: bool = True,
     ):
         """
@@ -355,9 +357,20 @@ class PlotlyPlotter:
         `scale_cols` is a dictionary of string column names to floats, where
         the float is the scalar that will be applied to the value of the column
         before plotting.
+        If `only_numeric` is True, will only plot columns in the DataFrame
+        with a numeric data type.
         Passing `show=False` will not show the figure.
         """
         df = in_df.reset_index()
+
+        if only_numeric:
+            non_numeric_cols = [
+                col for col in df.columns
+                if not pd.api.types.is_numeric_dtype(df[col])
+                and col not in (date_col,)
+            ]
+            exclude_cols = list(exclude_cols) + non_numeric_cols
+
         df.drop(columns=list(exclude_cols), errors='ignore', inplace=True)
         if include_cols:
             df = df.loc[:, list(include_cols) + [date_col]]
@@ -368,10 +381,13 @@ class PlotlyPlotter:
         if not labels:
             labels = dict()
 
+        if not names:
+            names = dict()
+
         if scale_cols:
             for k, v in scale_cols.items():
                 df[k] = df[k] * v
-                labels[k] = labels.get(k, k) + f" (scaled {v:0.1f}X)"
+                names[k] = names.get(k, k) + f" (scaled {v:0.1f}X)"
 
         fig = px.line(
             df, x=date_col, y=df.columns,
@@ -385,6 +401,16 @@ class PlotlyPlotter:
             rangeslider_visible=True,
             rangeselector=self.PX_RANGESELECTOR,
         )
+
+        # Update names of each trace using custom `names` dict
+        fig.for_each_trace(
+            lambda t: t.update(
+                name = names.get(t.name, t.name),
+                legendgroup = names.get(t.name, t.name),
+                hovertemplate = t.hovertemplate.replace(t.name, names.get(t.name, t.name))
+            )
+        )
+
         if show:
             fig.show()
         return fig
@@ -433,7 +459,7 @@ class PositionBase(FeedBase, PlotlyPlotter):
     # The current datetime, see `FeedBase`.
     dt: np.datetime64 = field(init=False)
     # Logging level for opening and closing trades
-    logging_level: int = logging.INFO
+    logging_level: int = logging.DEBUG
 
     def __post_init__(self):
         """
@@ -584,7 +610,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             self.dt = min(pos_dt)
             return self.dt
         return None
-    
+
     def get_dt(self):
         if getattr(self, 'clock', None):
             self.dt = self.clock.dt

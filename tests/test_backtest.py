@@ -76,7 +76,7 @@ class TestRunStrategy:
         ).ffill()
         px_plot(
             df,
-            show=False,
+            show=True,
             include_cols=['value', 'returns', 'nshort', 'nlong', 'AAPL'],
             scale_cols={'nshort': 40, 'nlong': 40, 'AAPL': 100.}
         )
