@@ -62,5 +62,9 @@ class TestRunStrategy:
         feed1.plot(show=False)
         strat1.positions[0].plot(show=False, include_cols=['price', 'returns', 'is_open'])
 
-        strat1.plot(show=True, include_cols=['value', 'returns', 'nshort', 'nlong'],
-                    scale_cols={'nshort': 40, 'nlong': 40})
+        strat1.plot(
+            show=True,
+            # merge_df=feed1.df,
+            include_cols=['value', 'returns', 'nshort', 'nlong'],
+            scale_cols={'nshort': 40, 'nlong': 40}
+        )

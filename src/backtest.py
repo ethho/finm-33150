@@ -414,7 +414,7 @@ class PositionBase(FeedBase, PlotlyPlotter):
     # Number of days that the position was open.
     days_open: int = 0
     # The current datetime, see `FeedBase`.
-    dt: Optional[np.datetime64] = None
+    dt: np.datetime64 = field(init=False)
 
     def __post_init__(self):
         """
