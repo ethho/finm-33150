@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 import plotly.express as px
-from backtest import PriceFeed, BacktestEngine, BasicStrategy
+from backtest import PriceFeed, BacktestEngine, BasicStrategy, px_plot
 
 
 class TestPriceFeed:
@@ -63,8 +63,20 @@ class TestRunStrategy:
         strat1.positions[0].plot(show=False, include_cols=['price', 'returns', 'is_open'])
 
         strat1.plot(
-            show=True,
-            # merge_df=feed1.df,
+            show=False,
             include_cols=['value', 'returns', 'nshort', 'nlong'],
             scale_cols={'nshort': 40, 'nlong': 40}
+        )
+
+        feed1_df = feed1.df.ffill()
+        df = strat1.df.merge(
+            feed1_df, how='outer', left_index=True, right_index=True,
+            # suffixes=(None, '_y'),
+        )
+        breakpoint()
+        px_plot(
+            df,
+            show=True,
+            include_cols=['value', 'returns', 'nshort', 'nlong', 'AAPL'],
+            scale_cols={'nshort': 40, 'nlong': 40, 'AAPL': 100.}
         )

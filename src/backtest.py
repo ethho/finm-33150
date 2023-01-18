@@ -415,6 +415,8 @@ class PositionBase(FeedBase, PlotlyPlotter):
     days_open: int = 0
     # The current datetime, see `FeedBase`.
     dt: np.datetime64 = field(init=False)
+    # Logging level for opening and closing trades
+    logging_level: int = logging.INFO
 
     def __post_init__(self):
         """
@@ -424,7 +426,7 @@ class PositionBase(FeedBase, PlotlyPlotter):
         self.price_at_open = self.get_price()
         self.open_dt = self.feed.dt
         self.get_dt()
-        logger.info(f"Opened position {pf(asdict(self))}")
+        logger.log(self.logging_level, f"Opened position {pf(asdict(self))}")
 
     def cost_to_open(self) -> float:
         """
@@ -450,7 +452,7 @@ class PositionBase(FeedBase, PlotlyPlotter):
         # if self.is_long:
         #     breakpoint()
         self.is_open = 0
-        logger.info(f"Closed position {pf(asdict(self))}")
+        logger.log(self.logging_level, f"Closed position {pf(asdict(self))}")
         return self.value_at_close
 
     def get_dt(self):
@@ -910,3 +912,8 @@ class BasicStrategy(StrategyBase):
             pos = self.long_positions()[0]
             if pos.days_open >= 30:
                 self.close(pos)
+
+def px_plot(df: pd.DataFrame, *args, **kw):
+    """Plots DataFrame `df` using a PlotlyPlotter instance."""
+    plotter = PlotlyPlotter()
+    return plotter._plot(in_df=df, *args, **kw)
