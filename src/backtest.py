@@ -345,7 +345,7 @@ class PlotlyPlotter:
         height=600, width=800,
         labels: Optional[Dict] = None,
         names: Optional[Dict] = None,
-        show: bool = True,
+        show: bool = False,
     ):
         """
         Plot a pandas DataFrame `df` using Plotly Express, with x-axis
@@ -391,11 +391,16 @@ class PlotlyPlotter:
 
         fig = px.line(
             df, x=date_col, y=df.columns,
-            hover_data={date_col: "|%B %d, %Y"},
+            hover_data={
+                date_col: "|%B %d, %Y",
+            },
             title=title,
             height=height, width=width,
             labels=labels,
         )
+        # fig.update_traces(
+        #     hovertemplate='%{x}:<br> {y}=%{y}'
+        # )
         fig.update_xaxes(
             tickformatstops = self.PX_TICKFORMATSTOPS,
             rangeslider_visible=True,
