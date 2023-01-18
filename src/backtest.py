@@ -24,7 +24,7 @@ def cls_name(self):
 
 
 def infer_price_feed_id(symbol: str, feeds: Dict[str, Any]) -> Union[FeedID, None]:
-    # TODO
+    # TODO: improve inference
     for feed_name, feed in feeds.items():
         if feed_name == 'price':
             if hasattr(feed, symbol):
@@ -240,6 +240,7 @@ class PlotlyPlotter:
         title=None,
         exclude_cols=('name',),
         include_cols=None,
+        scale_cols: Dict[str, float] = None,
         height=600, width=800,
         labels: Dict = None,
         show: bool = True,
@@ -251,6 +252,15 @@ class PlotlyPlotter:
             assert not df.empty
             if len(include_cols) == 1 and isinstance(df, pd.Series):
                 df = df.to_frame(name=include_cols[0])
+
+        if not labels:
+            labels = dict()
+
+        if scale_cols:
+            for k, v in scale_cols.items():
+                df[k] = df[k] * v
+                labels[k] = labels.get(k, k) + f" (scaled {v:0.1f}X)"
+
         fig = px.line(
             df, x=date_col, y=df.columns,
             hover_data={date_col: "|%B %d, %Y"},
@@ -285,6 +295,8 @@ class PositionBase(FeedBase, PlotlyPlotter):
     value: float = 0.
     returns: float = 0.
     price_at_open: float = field(init=False)
+    price_at_close: Optional[float] = None
+    value_at_close: Optional[float] = None
     open_dt: np.datetime64 = field(init=False)
     days_open: int = 0
     dt: np.datetime64 = field(init=False) # do not use
@@ -295,9 +307,21 @@ class PositionBase(FeedBase, PlotlyPlotter):
         self.get_dt()
         logger.info(f"Opened position {pf(asdict(self))}")
 
-    def close(self):
+    def cost_to_open(self) -> float:
+        short_mult = 1. if self.is_long else -1.
+        return short_mult * self.price_at_open * self.nshares
+
+    def close_value(self) -> float:
+        return (self.cost_to_open() + self.returns) * self.is_open
+
+    def close(self) -> float:
+        self.price_at_close = self.get_price()
+        self.value_at_close = self.close_value()
+        # if self.is_long:
+        #     breakpoint()
         self.is_open = 0
         logger.info(f"Closed position {pf(asdict(self))}")
+        return self.value_at_close
 
     def get_dt(self):
         self.dt = self.feed.dt
@@ -342,31 +366,59 @@ class StrategyBase(FeedBase, PlotlyPlotter):
     positions: List[PositionBase] = field(default_factory=list)
     value: float = 0.
     returns: float = 0.
-    is_active: int = 0
-    price_at_open: float = field(init=False)
-    open_dt: np.datetime64 = field(init=False)
-    dt: np.datetime64 = field(init=False) # do not use
+    is_active: int = 1
+    cash_equity: float = 10000.
+    price_at_open: Optional[float] = None
+    open_dt: Optional[np.datetime64] = None
+    dt: Optional[np.datetime64] = None
+    npositions: int = 0
+    nshort: int = 0
+    nlong: int = 0
+
+    def get_dt(self):
+        pos_dt = [pos.dt for pos in getattr(self, 'positions', list())]
+        if pos_dt:
+            self.dt = min(pos_dt)
+            return self.dt
+        return None
 
     def update(self):
-        self.get_value()
-        self.get_returns()
+        self.get_npositions()
+        if self.is_active:
+            self.get_dt()
+            self.get_value()
+            self.get_returns()
+            self.record()
+
+    def get_npositions(self) -> float:
+        self.npositions = len(self.get_positions())
+        self.nshort = len(self.short_positions())
+        self.nlong = len(self.long_positions())
+        return self.npositions
 
     def get_value(self) -> float:
-        self.value = sum(
-            pos.get_value() for pos in self.positions if pos.is_open
-        ) * self.is_active
+        self.value = (sum(
+            pos.close_value() for pos in self.positions
+        ) * self.is_active) + self.cash_equity
         return self.value
 
     def get_returns(self) -> float:
         if not self.is_active:
             logger.warning(f"refusing to update returns of a inactive strategy")
             return float('nan')
-        self.returns = sum(pos.get_returns() for pos in self.positions if pos.is_open)
+        rets = 0.
+        for pos in self.positions:
+            pos.update()
+            rets += pos.returns
+        self.returns = rets
         return self.returns
 
     def _pre_step(self):
         for pos in self.positions:
             pos.update()
+
+    def _post_step(self):
+        self.update()
 
     def step(self):
         raise NotImplementedError(
@@ -383,14 +435,25 @@ class StrategyBase(FeedBase, PlotlyPlotter):
     def long_positions(self, symbol: str = None) -> List[PositionBase]:
         return [
             pos for pos in self.get_positions(symbol)
-            if pos.nshares > 0.
+            if pos.is_long
         ]
 
     def short_positions(self, symbol: str = None) -> List[PositionBase]:
         return [
             pos for pos in self.get_positions(symbol)
-            if pos.nshares < 0.
+            if not pos.is_long
         ]
+
+    def open_pos(self, pos: PositionBase):
+        og_val = self.get_value()
+        self.cash_equity -= pos.cost_to_open()
+        self.positions.append(pos)
+        if not pos.is_long:
+            # breakpoint()
+            pass
+
+    def close(self, pos: PositionBase):
+        self.cash_equity += pos.close()
 
     def _get_counter_pos(self, symbol: str, going_long: bool) -> PositionBase:
         if going_long:
@@ -419,7 +482,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         )
         if close_opposite and counter_pos:
             nshares += counter_pos.nshares
-            counter_pos.close()
+            self.close(counter_pos)
 
         # Create the new position
         pos = PositionBase(
@@ -428,7 +491,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             feed=self.feeds[feed_id.name],
             feed_id=feed_id,
         )
-        self.positions.append(pos)
+        self.open_pos(pos)
 
     def buy(self, *args, **kw):
         return self._transact(*args, **kw)
@@ -436,10 +499,10 @@ class StrategyBase(FeedBase, PlotlyPlotter):
     def sell(self, nshares: float, *args, **kw):
         return self._transact(*args, nshares=-nshares, **kw)
 
-    def is_long(self):
+    def any_long(self):
         return any(self.long_positions())
 
-    def is_short(self):
+    def any_short(self):
         return any(self.short_positions())
 
     def exit_all(self):
@@ -486,8 +549,6 @@ class BacktestEngine(object):
             normalize=normalize_to_midnight,
             freq=step_size,
         )), name='main')
-
-        # TODO: define output feed
 
         self.dt = None
 
@@ -555,8 +616,7 @@ class BacktestEngine(object):
             strat.step()
             if isinstance(getattr(strat, 'post_step', None), Callable):
                 strat.post_step()
-
-        # TODO: record stuff using FeedBase
+            strat._post_step()
 
 
 class BasicStrategy(StrategyBase):
@@ -565,12 +625,15 @@ class BasicStrategy(StrategyBase):
         aapl = self.feeds['price'].AAPL
         if aapl is None:
             return
-        elif aapl < 1.0 and not self.is_long():
-            self.buy(nshares=1., symbol='AAPL')
-        elif aapl > 1.2 and not self.is_short():
-            self.sell(nshares=1., symbol='AAPL')
+        elif aapl < 1.0 and not self.any_long():
+            self.buy(nshares=100., symbol='AAPL')
+        elif aapl > 1.2 and not self.any_short():
+            self.sell(nshares=100., symbol='AAPL')
 
-        if self.is_long():
+        # if self.dt and self.dt >= pd.to_datetime('2018-10-28'):
+        #     breakpoint()
+
+        if self.any_long():
             pos = self.long_positions()[0]
             if pos.days_open >= 30:
-                pos.close()
+                self.close(pos)

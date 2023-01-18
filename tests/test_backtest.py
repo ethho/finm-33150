@@ -55,9 +55,12 @@ class TestRunStrategy:
         feed1 = PriceFeed.from_df(px.data.stocks())
         be.add_feed(feed1, name='price')
         assert len(be._feeds) == 1
-        strat1 = BasicStrategy()
+        strat1 = BasicStrategy(cash_equity=200.)
         be.add_strategy(strat1)
         be.run()
 
         feed1.plot(show=False)
         strat1.positions[0].plot(show=False, include_cols=['price', 'returns', 'is_open'])
+
+        strat1.plot(show=True, include_cols=['value', 'returns', 'nshort', 'nlong'],
+                    scale_cols={'nshort': 40, 'nlong': 40})
