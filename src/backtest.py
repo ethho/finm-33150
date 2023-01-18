@@ -1,4 +1,5 @@
 import os
+from pprint import pformat as pf
 import json
 import hashlib
 from collections import namedtuple
@@ -285,15 +286,18 @@ class PositionBase(FeedBase, PlotlyPlotter):
     returns: float = 0.
     price_at_open: float = field(init=False)
     open_dt: np.datetime64 = field(init=False)
+    days_open: int = 0
     dt: np.datetime64 = field(init=False) # do not use
 
     def __post_init__(self):
         self.price_at_open = self.get_price()
         self.open_dt = self.feed.dt
         self.get_dt()
+        logger.info(f"Opened position {pf(asdict(self))}")
 
     def close(self):
         self.is_open = 0
+        logger.info(f"Closed position {pf(asdict(self))}")
 
     def get_dt(self):
         self.dt = self.feed.dt
@@ -314,9 +318,9 @@ class PositionBase(FeedBase, PlotlyPlotter):
         self.returns = self.get_value() - (self.price_at_open * self.nshares)
         return self.value
 
-    @property
-    def days_open(self) -> int:
-        return (self.get_dt() - self.open_dt).days
+    def get_days_open(self) -> int:
+        self.days_open = (self.get_dt() - self.open_dt).days
+        return self.days_open
 
     @property
     def is_long(self) -> bool:
@@ -327,6 +331,7 @@ class PositionBase(FeedBase, PlotlyPlotter):
         self.get_price()
         self.get_value()
         if self.is_open:
+            self.get_days_open()
             self.get_returns()
             self.record()
 
@@ -351,7 +356,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             pos.get_value() for pos in self.positions if pos.is_open
         ) * self.is_active
         return self.value
-    
+
     def get_returns(self) -> float:
         if not self.is_active:
             logger.warning(f"refusing to update returns of a inactive strategy")
@@ -369,16 +374,36 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             f"in subclass"
         )
 
-    @property
-    def long_positions(self) -> List[PositionBase]:
-        return [pos for pos in self.positions if pos.nshares > 0. and pos.is_open]
+    def get_positions(self, symbol: str = None) -> List[PositionBase]:
+        return sorted([
+            pos for pos in self.positions
+            if pos.is_open and symbol in (None, pos.symbol)
+        ], key=lambda x: x.get_value(), reverse=True)
 
-    @property
-    def short_positions(self) -> List[PositionBase]:
-        return [pos for pos in self.positions if pos.nshares < 0. and pos.is_open]
+    def long_positions(self, symbol: str = None) -> List[PositionBase]:
+        return [
+            pos for pos in self.get_positions(symbol)
+            if pos.nshares > 0.
+        ]
+
+    def short_positions(self, symbol: str = None) -> List[PositionBase]:
+        return [
+            pos for pos in self.get_positions(symbol)
+            if pos.nshares < 0.
+        ]
+
+    def _get_counter_pos(self, symbol: str, going_long: bool) -> PositionBase:
+        if going_long:
+            pos_sorted = self.short_positions(symbol)
+        else:
+            pos_sorted = self.long_positions(symbol)
+        if not pos_sorted:
+            return None
+        return pos_sorted[-1] if going_long else pos_sorted[0]
 
     def _transact(
-        self, symbol: str, nshares: float, feed_id: Union[FeedID, None] = None
+        self, symbol: str, nshares: float, feed_id: Union[FeedID, None] = None,
+        close_opposite: bool = True,
     ):
         # Get the data feed associated with this trade
         if feed_id is None:
@@ -388,16 +413,15 @@ class StrategyBase(FeedBase, PlotlyPlotter):
 
         # Determine if opposite position exists and close the
         # existing before opening
-        going_long = bool(nshares >= 0.)
-        pos_sorted = self._get_positions(
-            symbol, long_only=(not going_long), short_only=going_long)
-        if pos_sorted:
-            if going_long:
-                counter_pos = pos_sorted[-1]
-            else:
-                counter_pos = pos_sorted[0]
-        breakpoint()
+        counter_pos = self._get_counter_pos(
+            going_long=bool(nshares >= 0),
+            symbol=symbol,
+        )
+        if close_opposite and counter_pos:
+            nshares += counter_pos.nshares
+            counter_pos.close()
 
+        # Create the new position
         pos = PositionBase(
             symbol=symbol,
             nshares=nshares,
@@ -405,28 +429,6 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             feed_id=feed_id,
         )
         self.positions.append(pos)
-        logger.info(f"Opened position {pos}")
-
-    def _get_positions(
-        self, symbol: Union[str, None] = None,
-        long_only: bool = False,
-        short_only: bool = False,
-    ) -> List[PositionBase]:
-        """
-        Return list of positions in descending order of current value.
-        Passing `symbol` will filter to only positions on that symbol.
-        """
-        out = sorted([
-            pos for pos in self.positions
-            if pos.is_open and symbol in (None, pos.symbol)
-        ], key=lambda x: x.get_value(), reverse=True)
-        assert not (long_only and short_only), (
-            f"can only specify one of long_only or short_only")
-        if long_only:
-            out = [pos for pos in out if pos.is_long]
-        elif short_only:
-            out = [pos for pos in out if not pos.is_long]
-        return out
 
     def buy(self, *args, **kw):
         return self._transact(*args, **kw)
@@ -435,10 +437,10 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         return self._transact(*args, nshares=-nshares, **kw)
 
     def is_long(self):
-        return any(self.long_positions)
+        return any(self.long_positions())
 
     def is_short(self):
-        return any(self.short_positions)
+        return any(self.short_positions())
 
     def exit_all(self):
         raise NotImplementedError()
@@ -569,6 +571,6 @@ class BasicStrategy(StrategyBase):
             self.sell(nshares=1., symbol='AAPL')
 
         if self.is_long():
-            pos = self.long_positions[0]
+            pos = self.long_positions()[0]
             if pos.days_open >= 30:
                 pos.close()
