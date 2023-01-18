@@ -593,6 +593,8 @@ class StrategyBase(FeedBase, PlotlyPlotter):
 
     def update(self):
         """Update all attributes that should be updated every step."""
+        for pos in self.positions:
+            pos.update()
         self.get_npositions()
         if self.is_active:
             self.get_dt()
@@ -631,8 +633,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
 
     def _pre_step(self):
         """Runs before `pre_step` method at every step."""
-        for pos in self.positions:
-            pos.update()
+        self.update()
 
     def pre_step(self):
         """Runs before `step` method at every step."""
@@ -891,11 +892,6 @@ class BacktestEngine(object):
         if pd.isnull(self.dt):
             return
 
-        # Update all feeds
-        for feedn, feed in self._feeds.items():
-            feed.dt = self.dt
-            feed.set_from_prev()
-
         # Iterate over strategies
         for strat in self._strats.values():
             strat._pre_step()
@@ -905,6 +901,11 @@ class BacktestEngine(object):
             if isinstance(getattr(strat, 'post_step', None), Callable):
                 strat.post_step()
             strat._post_step()
+
+        # Update all feeds
+        for feedn, feed in self._feeds.items():
+            feed.dt = self.dt
+            feed.set_from_prev()
 
 
 class BasicStrategy(StrategyBase):
@@ -923,7 +924,16 @@ class BasicStrategy(StrategyBase):
     """
 
     def step(self):
-        aapl = self.feeds['price'].AAPL
+        feed = self.feeds['price']
+        aapl = feed.AAPL
+
+        # DEBUG
+        # print(self.dt)
+        # print(feed)
+        # print(feed[-3:])
+        # print(feed._in_df.iloc[:3])
+        # breakpoint()
+
         if aapl is None:
             return
         elif aapl < 1.0 and not self.any_long():
