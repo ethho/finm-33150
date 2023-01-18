@@ -16,6 +16,16 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+__all__ = [
+    'BacktestEngine',
+    'StrategyBase',
+    'PositionBase',
+    'FeedBase',
+    'PlotlyPlotter'
+    'FeedID',
+    'px_plot',
+]
+
 # Columns in DataFrames that, when lower-cased,
 # are set as the DateIndex if they match one of these
 DATE_COLS = ('date',)
@@ -97,7 +107,7 @@ class FeedBase():
         """Wrapper method."""
         return self._get_df()
 
-    def _get_df(self) -> pd.DataFrame:
+    def _get_df(self, before_dt: bool = False) -> pd.DataFrame:
         """
         Return the list of records as a pandas DataFrame, indexed and sorted
         by datetime (`dt`).
@@ -110,7 +120,12 @@ class FeedBase():
         df['dt'] = pd.to_datetime(df['dt'])
         df.set_index('dt', inplace=True)
         df.sort_index(inplace=True)
+        if before_dt:
+            df = df.loc[:self.dt, :]
         return df
+
+    def __getitem__(self, *args, **kw):
+        return self._get_df(before_dt=True).iloc.__getitem__(*args, **kw)
 
     def record(self):
         """Record `self`'s attributes as a record and append it to `_records`."""
@@ -204,16 +219,18 @@ class FeedBase():
                                f"not exist in instance of {cls_name(self)}")
             setattr(self, k, v)
 
-    def _record_from_df(self, df: pd.DataFrame):
+    def _record_from_df(self, in_df: pd.DataFrame):
         """
         Load records from a pandas DataFrame, and sets `self`'s attributes to
         the values in the first row (chronologically) of the DataFrame.
         """
+        df = in_df.reset_index()
         date_col = infer_date_col(df.columns)
         if date_col is None:
             logger.warning(f"could not find a date-like column in columns={df.columns}")
         else:
             df.rename(columns={date_col: 'dt'}, inplace=True)
+            df.sort_values(by='dt', inplace=True)
 
         # Add fields that are not in the current dataclass
         fields_to_add = list()
@@ -240,7 +257,7 @@ class FeedBase():
 
     def record_from_df(self, df):
         """Wrapper method."""
-        self._record_from_df(df.copy())
+        self._record_from_df(df)
 
     def record_from_csv(self, fp: str, rename: Union[Dict, None] = None, **kw):
         """Wrapper method."""
@@ -501,11 +518,40 @@ class PositionBase(FeedBase, PlotlyPlotter):
             self.record()
 
 
+class ClockBase(object):
+    """
+    Base class for a Clock, which manages start, end, and step
+    size of the backtest based on a pandas DatetimeIndex.
+    """
+
+    def __init__(self, dti: pd.DatetimeIndex):
+        self.dti = dti
+        self.i = 0
+        self.dt = self.dti[self.i]
+
+    @property
+    def name(self) -> Union[str, None]:
+        return getattr(self.dti, 'name', None)
+
+    def step(self):
+        """
+        Set attribute `dt` to the next value in the DatetimeIndex.
+        """
+        self.i += 1
+        if self.i >= len(self.dti):
+            # return None out of bounds
+            return None
+        self.dt = self.dti[self.i]
+        return self.dt
+
+
 @dataclass
 class StrategyBase(FeedBase, PlotlyPlotter):
     """
     Base class that represents a trading strategy/opportunity.
     """
+    # Clock used to set dt
+    clock: Optional[ClockBase] = None
     # Dictionary of data feeds that are visible to this strategy.
     # Keyed by string-type name.
     feeds: Dict[str, FeedBase] = field(default_factory=dict)
@@ -528,9 +574,9 @@ class StrategyBase(FeedBase, PlotlyPlotter):
     # Immutable. Number of open long positions
     nlong: int = 0
 
-    def get_dt(self):
+    def _init_dt(self):
         """
-        Update `dt` attribute, setting it to the minimal `dt` across all
+        Initialize `dt` attribute, setting it to the minimal `dt` across all
         data feeds.
         """
         pos_dt = [pos.dt for pos in getattr(self, 'positions', list())]
@@ -538,6 +584,12 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             self.dt = min(pos_dt)
             return self.dt
         return None
+    
+    def get_dt(self):
+        if getattr(self, 'clock', None):
+            self.dt = self.clock.dt
+        else:
+            raise Exception(f"could not set dt from clock")
 
     def update(self):
         """Update all attributes that should be updated every step."""
@@ -674,7 +726,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
 
     def _transact(
         self, symbol: str, nshares: float, feed_id: Union[FeedID, None] = None,
-        close_opposite: bool = True,
+        close_opposite: bool = True, pos_cls: type = PositionBase
     ):
         """
         Enters a position of `nshares` on asset `symbol`, using funds from
@@ -700,7 +752,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             self.close(counter_pos)
 
         # Create the new position
-        pos = PositionBase(
+        pos = pos_cls(
             symbol=symbol,
             nshares=nshares,
             feed=self.feeds[feed_id.name],
@@ -729,32 +781,6 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         for pos in self.positions:
             self.close(pos)
 
-
-class ClockBase(object):
-    """
-    Base class for a Clock, which manages start, end, and step
-    size of the backtest based on a pandas DatetimeIndex.
-    """
-
-    def __init__(self, dti: pd.DatetimeIndex):
-        self.dti = dti
-        self.i = 0
-        self.dt = self.dti[self.i]
-
-    @property
-    def name(self) -> Union[str, None]:
-        return getattr(self.dti, 'name', None)
-
-    def step(self):
-        """
-        Set attribute `dt` to the next value in the DatetimeIndex.
-        """
-        self.i += 1
-        if self.i >= len(self.dti):
-            # return None out of bounds
-            return None
-        self.dt = self.dti[self.i]
-        return self.dt
 
 
 class BacktestEngine(object):
@@ -840,9 +866,10 @@ class BacktestEngine(object):
         Main event loop. Call this method to run the backtest simulation
         for all intervals of the main clock between `start_date` and `end_date`.
         """
-        # Pass all feeds to all strats
+        # Pass all feeds and main clock to all strats
         for strat in self._strats.values():
             strat.feeds.update(self._feeds)
+            strat.clock = self._clocks['main']
 
         # Main do..while event loop
         self.step()
@@ -917,3 +944,5 @@ def px_plot(df: pd.DataFrame, *args, **kw):
     """Plots DataFrame `df` using a PlotlyPlotter instance."""
     plotter = PlotlyPlotter()
     return plotter._plot(in_df=df, *args, **kw)
+
+

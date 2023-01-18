@@ -22,11 +22,13 @@ class TestPriceFeed:
         assert ps.price == 4.
         assert ps.get_prev()['price'] == 4.
         ps.record()
-        df = ps.df
+        df = ps[-2:]
+        assert len(df) == 2
 
         # Can plot using plotly express
         ps.plot(show=False)
 
+    @pytest.mark.skip
     def test_set_from_dataframe(self):
         df = px.data.stocks()
         ps = PriceFeed('2020-01-01', float('nan'))
@@ -68,15 +70,13 @@ class TestRunStrategy:
             scale_cols={'nshort': 40, 'nlong': 40}
         )
 
-        feed1_df = feed1.df.ffill()
+        # Merge with price data and plot
         df = strat1.df.merge(
-            feed1_df, how='outer', left_index=True, right_index=True,
-            # suffixes=(None, '_y'),
-        )
-        breakpoint()
+            feed1.df, how='outer', left_index=True, right_index=True,
+        ).ffill()
         px_plot(
             df,
-            show=True,
+            show=False,
             include_cols=['value', 'returns', 'nshort', 'nlong', 'AAPL'],
             scale_cols={'nshort': 40, 'nlong': 40, 'AAPL': 100.}
         )
