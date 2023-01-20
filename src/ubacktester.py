@@ -342,6 +342,7 @@ class PlotlyPlotter:
         only_numeric=True,
         include_cols=None,
         scale_cols: Dict[str, float] = None,
+        offset_cols: Dict[str, float] = None,
         height=600, width=800,
         labels: Optional[Dict] = None,
         names: Optional[Dict] = None,
@@ -387,7 +388,16 @@ class PlotlyPlotter:
         if scale_cols:
             for k, v in scale_cols.items():
                 df[k] = df[k] * v
-                names[k] = names.get(k, k) + f" (scaled {v:0.1f}X)"
+                if v < 0.5:
+                    vshow = f"1/{round(1/v)}"
+                else:
+                    vshow = f"{v:0.1f}"
+                names[k] = names.get(k, k) + f" (scaled {vshow}X)"
+        
+        if offset_cols:
+            for k, v in offset_cols.items():
+                df[k] = df[k] + v
+                names[k] = names.get(k, k) + f" (offset by {v:0.1f})"
 
         fig = px.line(
             df, x=date_col, y=df.columns,
@@ -433,14 +443,18 @@ class PositionBase(FeedBase, PlotlyPlotter):
     """
     Base class that represents a single position, long or short.
     """
-    # Number of shares. Immutable. Negative for short positions.
-    nshares: float
     # Pointer to the `Feed` object that this position tracks.
     feed: PriceFeed = field(repr=False)
     # `feed_id.field` defines where to find the price data in `self.feed`
     feed_id: FeedID
     # Symbol of the traded asset
     symbol: str
+    # Number of shares. Immutable. Negative for short positions.
+    nshares: Optional[float] = float('nan')
+    # Position size. Immutable. Negative for short positions.
+    # Either nshares or pos_size must be passed. pos_size will be ignored
+    # if both are passed
+    pos_size: Optional[float] = float('nan')
     # Whether the position is open or not.
     is_open: int = 1
     # Current price of the tracked asset. This will continue to change
@@ -465,6 +479,9 @@ class PositionBase(FeedBase, PlotlyPlotter):
     dt: np.datetime64 = field(init=False)
     # Logging level for opening and closing trades
     logging_level: int = logging.DEBUG
+    # Whether to allow fractional shares when calculating nshares from pos_size
+    # If False, rounds nshares to the nearest integer number of shares.
+    allow_fractional: bool = False
 
     def __post_init__(self):
         """
@@ -472,8 +489,25 @@ class PositionBase(FeedBase, PlotlyPlotter):
         `__init__`.
         """
         self.price_at_open = self.get_price()
-        self.open_dt = self.feed.dt
-        self.get_dt()
+        self.open_dt = self.get_dt()
+
+        # Calculate nshares if only pos_size was passed
+        if pd.isnull(self.nshares):
+            assert not pd.isnull(self.pos_size), (
+                f"must provide one of `pos_size` or `nshares`"
+            )
+            nshares = self.pos_size / self.price_at_open
+            if not self.allow_fractional:
+                nshares = round(nshares)
+                if nshares == 0:
+                    logger.warning(
+                        f"After rounding (allow_fractional=False), number of "
+                        f"shares is {nshares=}. Pass allow_fractional=True "
+                        f"or provide `nshares` explicitly."
+                    )
+            self.nshares = nshares
+        assert not pd.isnull(self.nshares)
+
         logger.log(self.logging_level, f"Opened position {pf(asdict(self))}")
 
     def cost_to_open(self) -> float:
@@ -524,6 +558,9 @@ class PositionBase(FeedBase, PlotlyPlotter):
             logger.warning(f"refusing to update returns of a closed position")
             return
         self.returns = self.get_value() - (self.price_at_open * self.nshares)
+        # print(f"nshares={self.nshares:0.2f} price={self.get_price():0.2f} "
+        #       f"value={self.get_value():0.2f} "
+        #       f"open_price={self.price_at_open:0.2f} returns={self.returns:0.2f}")
         return self.value
 
     def get_days_open(self) -> int:
@@ -546,7 +583,6 @@ class PositionBase(FeedBase, PlotlyPlotter):
         if self.is_open:
             self.get_days_open()
             self.get_returns()
-            self.record()
 
 
 class ClockBase(object):
@@ -631,7 +667,6 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             self.get_dt()
             self.get_value()
             self.get_returns()
-            self.record()
 
     def get_npositions(self) -> float:
         """Update attributes `npositions`, `nshort`, and `nlong`."""
@@ -662,6 +697,14 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         self.returns = rets
         return self.returns
 
+    def get_sharpe(self) -> float:
+        """Update the `sharpe` attribute with the current Sharpe ratio."""
+        raise NotImplementedError()
+
+    def start(self):
+        """Runs once before the first step in the simulation."""
+        pass
+
     def _pre_step(self):
         """Runs before `pre_step` method at every step."""
         self.update()
@@ -684,6 +727,9 @@ class StrategyBase(FeedBase, PlotlyPlotter):
     def _post_step(self):
         """Runs after `post_step` method at every step."""
         self.update()
+        for pos in self.positions:
+            pos.record()
+        self.record()
 
     def finish(self):
         """
@@ -691,6 +737,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         Exits all positions by default.
         """
         self.exit_all()
+        assert not self.get_positions()
 
     def get_positions(self, symbol: str = None) -> List[PositionBase]:
         """
@@ -757,8 +804,13 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         return pos_sorted[-1] if going_long else pos_sorted[0]
 
     def _transact(
-        self, symbol: str, nshares: float, feed_id: Union[FeedID, None] = None,
-        close_opposite: bool = True, pos_cls: type = PositionBase
+        self, symbol: str,
+        nshares: Optional[float] = None,
+        pos_size: Optional[float] = None,
+        feed_id: Union[FeedID, None] = None,
+        close_opposite: bool = False,
+        pos_cls: type = PositionBase,
+        allow_fractional: bool = False,
     ):
         """
         Enters a position of `nshares` on asset `symbol`, using funds from
@@ -771,24 +823,34 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         if feed_id is None:
             feed_id: Union[FeedID, None] = infer_price_feed_id(
                 symbol=symbol, feeds=self.feeds)
+        if not isinstance(feed_id, FeedID):
+            try:
+                feed_id = FeedID(*feed_id)
+            except:
+                raise
         assert feed_id is not None
 
         # Determine if opposite position exists and close the
         # existing before opening
-        counter_pos = self._get_counter_pos(
-            going_long=bool(nshares >= 0),
-            symbol=symbol,
-        )
-        if close_opposite and counter_pos:
-            nshares += counter_pos.nshares
-            self.close(counter_pos)
+        if close_opposite:
+            if nshares is None:
+                raise NotImplementedError()
+            counter_pos = self._get_counter_pos(
+                going_long=bool(nshares >= 0),
+                symbol=symbol,
+            )
+            if counter_pos:
+                nshares += counter_pos.nshares
+                self.close(counter_pos)
 
         # Create the new position
         pos = pos_cls(
             symbol=symbol,
             nshares=nshares,
+            pos_size=pos_size,
             feed=self.feeds[feed_id.name],
             feed_id=feed_id,
+            allow_fractional=allow_fractional,
         )
         self.open_pos(pos)
 
@@ -796,9 +858,16 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         """Enters a long position. See `_transact` docs."""
         return self._transact(*args, **kw)
 
-    def sell(self, nshares: float, *args, **kw):
+    def sell(
+        self, nshares: Optional[float] = None, pos_size: Optional[float] = None,
+        *args, **kw
+    ):
         """Enters a short position with `nshares` > 0. See `_transact` docs."""
-        return self._transact(*args, nshares=-nshares, **kw)
+        if nshares is not None and nshares > 0.:
+            nshares = -nshares
+        if pos_size is not None and pos_size > 0.:
+            pos_size = -pos_size
+        return self._transact(*args, nshares=nshares, pos_size=pos_size, **kw)
 
     def any_long(self) -> bool:
         """Returns True if there are any open long positions."""
@@ -810,9 +879,8 @@ class StrategyBase(FeedBase, PlotlyPlotter):
 
     def exit_all(self):
         """Exit all open positions"""
-        for pos in self.positions:
+        for pos in self.get_positions():
             self.close(pos)
-
 
 
 class BacktestEngine(object):
@@ -902,6 +970,7 @@ class BacktestEngine(object):
         for strat in self._strats.values():
             strat.feeds.update(self._feeds)
             strat.clock = self._clocks['main']
+            strat.start()
 
         # Main do..while event loop
         self.step()
