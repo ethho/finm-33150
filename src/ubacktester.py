@@ -2,11 +2,13 @@ import os
 from pprint import pformat as pf
 import json
 import hashlib
-from collections import namedtuple
+from collections import namedtuple, abc
 import logging
 from typing import Dict, List, Optional, Union, Tuple, Callable, Any
-from datetime import datetime, timedelta
+from datetime import datetime, date
 from dataclasses import dataclass, field, asdict, make_dataclass
+from math import sqrt
+from numbers import Number
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -34,6 +36,20 @@ DATE_COLS = ('date',)
 # of the data feed and the field in that data feed that contains the value.
 FeedID = namedtuple('FeedID', ('name', 'field'))
 
+# -------------------------- Helpers & Utilities -------------------------------
+
+def downside_deviation(ser: pd.Series, rf: Union[float, pd.Series] = 0.) -> float:
+    """
+    Calculate the downside standard deviation of return series `ser`.
+    Optionally, pass risk-free rate `rf` as a Series (defaults to zero).
+    """
+    if not isinstance(ser, abc.Sequence):
+        return 0.
+    ser_adj = ser - rf
+    neg_returns = ser_adj.loc[ser_adj < 0]
+    dev = sqrt(neg_returns.pow(2).sum() / len(ser_adj))
+    return dev
+
 
 def cls_name(self) -> str:
     """Get the name of `self`'s class."""
@@ -58,6 +74,12 @@ def sha1(d: Dict, maxlen=7) -> str:
     return hashlib.sha1(
         json.dumps(d, sort_keys=True).encode('utf-8')
     ).hexdigest()[:maxlen]
+
+
+def px_plot(df: pd.DataFrame, *args, **kw):
+    """Plots DataFrame `df` using a PlotlyPlotter instance."""
+    plotter = PlotlyPlotter()
+    return plotter._plot(in_df=df, *args, **kw)
 
 
 def pd_to_native_dtype(dtype):
@@ -88,6 +110,7 @@ def infer_date_col(cols: List[str], matches=DATE_COLS) -> Union[str, None]:
             return col_raw
     return None
 
+# ------------------------------- Base Classes ---------------------------------
 
 @dataclass
 class FeedBase():
@@ -102,6 +125,9 @@ class FeedBase():
     """
     dt: datetime
 
+    def has_records(self) -> bool:
+        return len(getattr(self, '_records', list())) > 0
+
     @property
     def df(self) -> pd.DataFrame:
         """Wrapper method."""
@@ -112,7 +138,7 @@ class FeedBase():
         Return the list of records as a pandas DataFrame, indexed and sorted
         by datetime (`dt`).
         """
-        assert getattr(self, '_records', None), (
+        assert self.has_records(), (
             f"'{cls_name(self)}' has no recorded data"
         )
         df = pd.DataFrame(data=self._records)
@@ -127,11 +153,17 @@ class FeedBase():
     def __getitem__(self, *args, **kw):
         return self._get_df(before_dt=True).iloc.__getitem__(*args, **kw)
 
-    def record(self):
+    def record(self, allow_types=(Number, bool, str, np.datetime64, datetime, date)):
         """Record `self`'s attributes as a record and append it to `_records`."""
         if not hasattr(self, '_records'):
             self._records = list()
-        self._records.append(asdict(self))
+        d = asdict(
+            self,
+            dict_factory=lambda x: {
+                k: v for (k, v) in x if isinstance(v, allow_types)
+            }
+        )
+        self._records.append(d)
 
     def in_df_bounds(self) -> bool:
         """
@@ -393,7 +425,7 @@ class PlotlyPlotter:
                 else:
                     vshow = f"{v:0.1f}"
                 names[k] = names.get(k, k) + f" (scaled {vshow}X)"
-        
+
         if offset_cols:
             for k, v in offset_cols.items():
                 df[k] = df[k] + v
@@ -444,7 +476,7 @@ class PositionBase(FeedBase, PlotlyPlotter):
     Base class that represents a single position, long or short.
     """
     # Pointer to the `Feed` object that this position tracks.
-    feed: PriceFeed = field(repr=False)
+    feed: PriceFeed = field(repr=False, metadata=dict(exclude_from_dict=True))
     # `feed_id.field` defines where to find the price data in `self.feed`
     feed_id: FeedID
     # Symbol of the traded asset
@@ -465,6 +497,9 @@ class PositionBase(FeedBase, PlotlyPlotter):
     # Return from the position. Will not reset to zero when position is closed.
     # Will be positive for a profitable short position.
     returns: float = 0.
+    # Also track daily returns and daily % returns
+    daily_returns: float = 0.
+    daily_pct_returns: float = 0.
     # Immutable. Price of the asset when position was opened.
     price_at_open: float = field(init=False)
     # Immutable. Price of the asset when position was closed.
@@ -523,7 +558,7 @@ class PositionBase(FeedBase, PlotlyPlotter):
         The value of the position if it were to be closed. Zero if the position
         is already closed.
         """
-        return (self.cost_to_open() + self.returns) * self.is_open
+        return (self.cost_to_open() + self.get_returns()) * self.is_open
 
     def close(self) -> float:
         """
@@ -531,10 +566,11 @@ class PositionBase(FeedBase, PlotlyPlotter):
         """
         self.price_at_close = self.get_price()
         self.value_at_close = self.close_value()
-        # if self.is_long:
-        #     breakpoint()
+        self.daily_returns = 0.
+        self.daily_pct_returns = 0.
         self.is_open = 0
         logger.log(self.logging_level, f"Closed position {pf(asdict(self))}")
+        # breakpoint()
         return self.value_at_close
 
     def get_dt(self):
@@ -556,12 +592,27 @@ class PositionBase(FeedBase, PlotlyPlotter):
         """Update the `returns` attribute if the position is open."""
         if not self.is_open:
             logger.warning(f"refusing to update returns of a closed position")
+            self.daily_returns = 0.
+            self.daily_pct_returns = 0.
             return
         self.returns = self.get_value() - (self.price_at_open * self.nshares)
         # print(f"nshares={self.nshares:0.2f} price={self.get_price():0.2f} "
         #       f"value={self.get_value():0.2f} "
         #       f"open_price={self.price_at_open:0.2f} returns={self.returns:0.2f}")
-        return self.value
+
+        # Daily returns are today's position value minus yesterday's
+        yest_value = self.get_yest_value()
+        assert isinstance(yest_value, float)
+        self.daily_returns = self.get_value() - yest_value
+        self.daily_pct_returns = 100 * self.daily_returns / yest_value
+        return self.returns
+
+    def get_yest_value(self) -> float:
+        """Get yesterday's value"""
+        if len(getattr(self, '_records', list())) < 2:
+            return self.get_value()
+        else:
+            return self[-2].loc['value']
 
     def get_days_open(self) -> int:
         """Update the `days_open` attribute."""
@@ -618,16 +669,28 @@ class StrategyBase(FeedBase, PlotlyPlotter):
     Base class that represents a trading strategy/opportunity.
     """
     # Clock used to set dt
-    clock: Optional[ClockBase] = None
+    clock: Optional[ClockBase] = field(
+        default=None,
+        metadata=dict(exclude_from_dict=True)
+    )
     # Dictionary of data feeds that are visible to this strategy.
     # Keyed by string-type name.
-    feeds: Dict[str, FeedBase] = field(default_factory=dict)
+    feeds: Dict[str, FeedBase] = field(
+        default_factory=dict,
+        metadata=dict(exclude_from_dict=True)
+    )
     # List of positions (open or closed) that this strategy has initialized.
-    positions: List[PositionBase] = field(default_factory=list)
+    positions: List[PositionBase] = field(
+        default_factory=list,
+        metadata=dict(exclude_from_dict=True)
+    )
     # Current value of all positions to date, plus cash equity.
     value: float = 0.
     # Total return of the strategy to date.
     returns: float = 0.
+    # Daily returns and % returns, i.e. return since yesterday.
+    daily_returns: float = 0.
+    daily_pct_returns: float = 0.
     # Whether the strategy is active or not.
     is_active: int = 1
     # Amount of cash equity to start with
@@ -640,6 +703,9 @@ class StrategyBase(FeedBase, PlotlyPlotter):
     nshort: int = 0
     # Immutable. Number of open long positions
     nlong: int = 0
+    # Track the Sharpe and Sortino ratios
+    sharpe: float = 0.
+    sortino: float = 0.
 
     def _init_dt(self):
         """
@@ -660,17 +726,19 @@ class StrategyBase(FeedBase, PlotlyPlotter):
 
     def update(self):
         """Update all attributes that should be updated every step."""
-        for pos in self.positions:
+        for pos in self.get_open_positions():
             pos.update()
         self.get_npositions()
         if self.is_active:
             self.get_dt()
             self.get_value()
             self.get_returns()
+            self.get_sharpe()
+            self.get_sortino()
 
     def get_npositions(self) -> float:
         """Update attributes `npositions`, `nshort`, and `nlong`."""
-        self.npositions = len(self.get_positions())
+        self.npositions = len(self.get_open_positions())
         self.nshort = len(self.short_positions())
         self.nlong = len(self.long_positions())
         return self.npositions
@@ -681,9 +749,16 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         positions' values, plus cash equity.
         """
         self.value = (sum(
-            pos.close_value() for pos in self.positions
+            pos.close_value() for pos in self.get_open_positions()
         ) * self.is_active) + self.cash_equity
         return self.value
+
+    def get_yest_value(self) -> float:
+        """Get yesterday's value"""
+        if len(getattr(self, '_records', list())) < 2:
+            return self.get_value()
+        else:
+            return self[-2].loc['value']
 
     def get_returns(self) -> float:
         """Update the `returns` attribute."""
@@ -691,15 +766,40 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             logger.warning(f"refusing to update returns of a inactive strategy")
             return float('nan')
         rets = 0.
+        daily_rets = 0.
+        yest_value = self.get_yest_value()
+        assert isinstance(yest_value, float)
         for pos in self.positions:
-            pos.update()
+            if pos.is_open:
+                pos.update()
             rets += pos.returns
+            daily_rets += pos.daily_returns
         self.returns = rets
+        self.daily_returns = daily_rets
+        if self.daily_returns - (self.get_value() - yest_value) > 1e-4:
+            breakpoint()
+        self.daily_pct_returns = 100 * self.daily_returns / yest_value
         return self.returns
 
-    def get_sharpe(self) -> float:
+    def get_sharpe(self, rf: Union[float, pd.Series] = 0.) -> float:
         """Update the `sharpe` attribute with the current Sharpe ratio."""
-        raise NotImplementedError()
+        if self.has_records():
+            daily_returns = self._get_df(before_dt=True).loc[:, 'daily_returns'].iloc[0]
+        else:
+            self.sharpe = 0.
+            return self.sharpe
+        self.sharpe = (daily_returns - rf) / daily_returns.std()
+        return self.sharpe
+
+    def get_sortino(self, rf: Union[float, pd.Series] = 0.) -> float:
+        """Update the `sortino` attribute with the current Sortino ratio."""
+        if self.has_records():
+            daily_returns = self._get_df(before_dt=True).loc[:, 'daily_returns'].iloc[0]
+        else:
+            self.sharpe = 0.
+            return self.sharpe
+        self.sortino = (daily_returns - rf) / downside_deviation(daily_returns)
+        return self.sortino
 
     def start(self):
         """Runs once before the first step in the simulation."""
@@ -727,7 +827,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
     def _post_step(self):
         """Runs after `post_step` method at every step."""
         self.update()
-        for pos in self.positions:
+        for pos in self.get_open_positions():
             pos.record()
         self.record()
 
@@ -737,9 +837,13 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         Exits all positions by default.
         """
         self.exit_all()
-        assert not self.get_positions()
+        assert not self.get_open_positions()
 
-    def get_positions(self, symbol: str = None) -> List[PositionBase]:
+    def get_positions(self, *args, **kw):
+        """Alias for `get_open_positions`."""
+        return self.get_open_positions(*args, **kw)
+
+    def get_open_positions(self, symbol: str = None) -> List[PositionBase]:
         """
         Get list of open positions. Will only return positions
         on `symbol` if it is provided.
@@ -755,7 +859,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         on `symbol` if it is provided.
         """
         return [
-            pos for pos in self.get_positions(symbol)
+            pos for pos in self.get_open_positions(symbol)
             if pos.is_long
         ]
 
@@ -765,7 +869,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         on `symbol` if it is provided.
         """
         return [
-            pos for pos in self.get_positions(symbol)
+            pos for pos in self.get_open_positions(symbol)
             if not pos.is_long
         ]
 
@@ -879,7 +983,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
 
     def exit_all(self):
         """Exit all open positions"""
-        for pos in self.get_positions():
+        for pos in self.get_open_positions():
             self.close(pos)
 
 
@@ -919,7 +1023,7 @@ class BacktestEngine(object):
         """
         positions = list()
         for strat in getattr(self, '_strats', list()):
-            positions.extend(strat.get_positions())
+            positions.extend(strat.get_open_positions())
         return sorted(positions, lambda x: x.get_value(), reverse=True)
 
     def add_feed(self, feed: FeedBase, name=None):
@@ -1007,6 +1111,7 @@ class BacktestEngine(object):
             feed.dt = self.dt
             feed.set_from_prev()
 
+# ---------------------------- Strategy Library --------------------------------
 
 class BasicStrategy(StrategyBase):
     """
@@ -1050,9 +1155,27 @@ class BasicStrategy(StrategyBase):
             if pos.days_open >= 30:
                 self.close(pos)
 
-def px_plot(df: pd.DataFrame, *args, **kw):
-    """Plots DataFrame `df` using a PlotlyPlotter instance."""
-    plotter = PlotlyPlotter()
-    return plotter._plot(in_df=df, *args, **kw)
 
+@dataclass
+class BuyAndHold(StrategyBase):
+    """
+    Base class for a buy and hold strategy. This strategy enters a long position
+    on security defined by `feed_id`, which defines which feed + field to buy.
 
+    By default, stategies close all positions at the end of the backtest
+    simulation, so we don't need to explitly close the position.
+    """
+    symbol: str = ''
+    pos_size: float = 0. # long position size
+    first_dt: bool = True
+
+    def step(self):
+        if self.first_dt:
+            self.buy(
+                symbol=self.feed_id.field,
+                pos_size=self.pos_size,
+                feed_id=self.feed_id,
+                close_opposite=False,
+                allow_fractional=True,
+            )
+            self.first_dt = False

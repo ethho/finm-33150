@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 import plotly.express as px
-from backtest import PriceFeed, BacktestEngine, BasicStrategy, px_plot
+from ubacktester import PriceFeed, BacktestEngine, BasicStrategy, px_plot, BuyAndHold
 
 
 class TestPriceFeed:
@@ -49,7 +49,7 @@ class TestPriceFeed:
 
 class TestRunStrategy:
 
-    def test_run(self):
+    def test_run_basic_strategy(self):
         be = BacktestEngine(
             start_date='2018-01-01',
             end_date='2019-12-01',
@@ -79,4 +79,22 @@ class TestRunStrategy:
             show=True,
             include_cols=['value', 'returns', 'nshort', 'nlong', 'AAPL'],
             scale_cols={'nshort': 40, 'nlong': 40, 'AAPL': 100.}
+        )
+
+    def test_run_buy_and_hold(self):
+        be = BacktestEngine(
+            start_date='2018-01-01',
+            end_date='2019-12-01',
+        )
+        feed1 = PriceFeed.from_df(px.data.stocks())
+        be.add_feed(feed1, name='price')
+        assert len(be._feeds) == 1
+        strat1 = BuyAndHold(cash_equity=1e4, symbol='AAPL', pos_size=100.)
+        be.add_strategy(strat1)
+        be.run()
+
+        strat1.plot(
+            show=True,
+            include_cols=['daily_pct_returns'],
+            # scale_cols={'nshort': 40, 'nlong': 40}
         )
