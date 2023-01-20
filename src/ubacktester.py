@@ -591,7 +591,6 @@ class PositionBase(FeedBase, PlotlyPlotter):
         self.value = self.get_price() * self.nshares * self.is_open
         return self.value
 
-    @profiler()
     def get_returns(self):
         """Update the `returns` attribute if the position is open."""
         if not self.is_open:
@@ -603,7 +602,6 @@ class PositionBase(FeedBase, PlotlyPlotter):
         # print(f"nshares={self.nshares:0.2f} price={self.get_price():0.2f} "
         #       f"value={self.get_value():0.2f} "
         #       f"open_price={self.price_at_open:0.2f} returns={self.returns:0.2f}")
-        self.get_daily_returns()
         return self.returns
 
     def get_daily_returns(self):
@@ -614,7 +612,6 @@ class PositionBase(FeedBase, PlotlyPlotter):
         self.daily_pct_returns = 100 * self.daily_returns / yest_value
         return self.daily_returns
 
-    @profiler()
     def get_yest_value(self) -> float:
         """
         Get yesterday's value.
@@ -636,7 +633,6 @@ class PositionBase(FeedBase, PlotlyPlotter):
         """Returns whether this position is long or not."""
         return bool(self.nshares >= 0)
 
-    @profiler()
     def update(self):
         """
         Update all attributes that should be updated at every step.
@@ -738,7 +734,6 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         else:
             raise Exception(f"could not set dt from clock")
 
-    @profiler()
     def update(self):
         """Update all attributes that should be updated every step."""
         for pos in self.get_open_positions():
@@ -748,10 +743,8 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             self.get_dt()
             self.get_value()
             self.get_returns()
-            start = time.time()
             self.get_sharpe()
             self.get_sortino()
-            logging.info(f"get sharpe, sortino update took {(time.time() - start):0.4f} seconds")
 
     def get_npositions(self) -> float:
         """Update attributes `npositions`, `nshort`, and `nlong`."""
@@ -760,7 +753,6 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         self.nlong = len(self.long_positions())
         return self.npositions
 
-    @profiler()
     def get_value(self) -> float:
         """
         Update the `value` attribute. Calculated as the sum of value of all open
@@ -1104,7 +1096,6 @@ class BacktestEngine(object):
         for strat in self._strats.values():
             strat.finish()
 
-    @profiler()
     def step(self):
         """Run at every step of the simulation."""
         # Tick main clock
