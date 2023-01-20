@@ -1,6 +1,7 @@
 import os
 from pprint import pformat as pf
 import json
+import time
 import hashlib
 from collections import namedtuple, abc
 import logging
@@ -13,6 +14,8 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+
+from profiler import profiler
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger()
@@ -588,6 +591,7 @@ class PositionBase(FeedBase, PlotlyPlotter):
         self.value = self.get_price() * self.nshares * self.is_open
         return self.value
 
+    @profiler()
     def get_returns(self):
         """Update the `returns` attribute if the position is open."""
         if not self.is_open:
@@ -599,16 +603,24 @@ class PositionBase(FeedBase, PlotlyPlotter):
         # print(f"nshares={self.nshares:0.2f} price={self.get_price():0.2f} "
         #       f"value={self.get_value():0.2f} "
         #       f"open_price={self.price_at_open:0.2f} returns={self.returns:0.2f}")
-
-        # Daily returns are today's position value minus yesterday's
-        yest_value = self.get_yest_value()
-        assert isinstance(yest_value, float)
-        self.daily_returns = self.get_value() - yest_value
-        self.daily_pct_returns = 100 * self.daily_returns / yest_value
+        self.get_daily_returns()
         return self.returns
 
+    def get_daily_returns(self):
+        # Daily returns are today's position value minus yesterday's
+        yest_value = self.get_yest_value()
+        # assert isinstance(yest_value, float)
+        self.daily_returns = self.get_value() - yest_value
+        self.daily_pct_returns = 100 * self.daily_returns / yest_value
+        return self.daily_returns
+
+    @profiler()
     def get_yest_value(self) -> float:
-        """Get yesterday's value"""
+        """
+        Get yesterday's value.
+        Large source of latency due to call to _get_df, and since this
+        is called frequently.
+        """
         if len(getattr(self, '_records', list())) < 2:
             return self.get_value()
         else:
@@ -624,6 +636,7 @@ class PositionBase(FeedBase, PlotlyPlotter):
         """Returns whether this position is long or not."""
         return bool(self.nshares >= 0)
 
+    @profiler()
     def update(self):
         """
         Update all attributes that should be updated at every step.
@@ -634,6 +647,7 @@ class PositionBase(FeedBase, PlotlyPlotter):
         if self.is_open:
             self.get_days_open()
             self.get_returns()
+            self.get_daily_returns()
 
 
 class ClockBase(object):
@@ -724,6 +738,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         else:
             raise Exception(f"could not set dt from clock")
 
+    @profiler()
     def update(self):
         """Update all attributes that should be updated every step."""
         for pos in self.get_open_positions():
@@ -733,8 +748,10 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             self.get_dt()
             self.get_value()
             self.get_returns()
+            start = time.time()
             self.get_sharpe()
             self.get_sortino()
+            logging.info(f"get sharpe, sortino update took {(time.time() - start):0.4f} seconds")
 
     def get_npositions(self) -> float:
         """Update attributes `npositions`, `nshort`, and `nlong`."""
@@ -743,6 +760,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         self.nlong = len(self.long_positions())
         return self.npositions
 
+    @profiler()
     def get_value(self) -> float:
         """
         Update the `value` attribute. Calculated as the sum of value of all open
@@ -1065,6 +1083,7 @@ class BacktestEngine(object):
             raise Exception(f"{cls_name(self)} already has a clock named {name}")
         self._clocks[name] = clock
 
+    @profiler()
     def run(self):
         """
         Main event loop. Call this method to run the backtest simulation
@@ -1085,6 +1104,7 @@ class BacktestEngine(object):
         for strat in self._strats.values():
             strat.finish()
 
+    @profiler()
     def step(self):
         """Run at every step of the simulation."""
         # Tick main clock

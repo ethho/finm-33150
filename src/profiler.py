@@ -58,7 +58,7 @@ def profiler(flavor: Optional[str] = 'wall_clock', log_dir: Optional[str] = './'
             start = time.time()
             result = func(*args, **kwargs)
             elapsed = time.time() - start
-            print(f"'{func.__name__}' took {elapsed:0.2f} seconds")
+            print(f"'{func.__name__}' took {elapsed:0.4f} seconds")
             return result
         return with_prof
 

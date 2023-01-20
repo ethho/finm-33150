@@ -94,7 +94,7 @@ class TestRunStrategy:
         be.run()
 
         strat1.plot(
-            show=True,
+            show=False,
             include_cols=['daily_pct_returns'],
             # scale_cols={'nshort': 40, 'nlong': 40}
         )
