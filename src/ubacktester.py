@@ -1172,9 +1172,8 @@ class BuyAndHold(StrategyBase):
     def step(self):
         if self.first_dt:
             self.buy(
-                symbol=self.feed_id.field,
+                symbol=self.symbol,
                 pos_size=self.pos_size,
-                feed_id=self.feed_id,
                 close_opposite=False,
                 allow_fractional=True,
             )
