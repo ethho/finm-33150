@@ -15,8 +15,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from profiler import profiler
-
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -1075,7 +1073,6 @@ class BacktestEngine(object):
             raise Exception(f"{cls_name(self)} already has a clock named {name}")
         self._clocks[name] = clock
 
-    @profiler()
     def run(self):
         """
         Main event loop. Call this method to run the backtest simulation
