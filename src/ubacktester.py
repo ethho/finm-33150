@@ -228,11 +228,9 @@ class FeedBase():
 
     def set_from_prev_in_df(self):
         # Get last row of _in_df
-        last_row= self._in_df[self._in_df.dt < self.dt].iloc[0, :].to_dict()
+        last_row = self._in_df[self._in_df.dt <= self.dt].iloc[-1, :].to_dict()
         if 'dt' in last_row:
             del last_row['dt']
-        # last_record = self._records[-1]
-        # breakpoint()
         self._set_from_dict(last_row)
 
     def set_from_prev(self):
@@ -1140,7 +1138,7 @@ class BacktestEngine(object):
         # Update all feeds
         for feedn, feed in self._feeds.items():
             feed.dt = self.dt
-            feed.set_from_prev()
+            feed.set_from_prev_in_df()
 
 # ---------------------------- Strategy Library --------------------------------
 
