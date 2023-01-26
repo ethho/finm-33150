@@ -295,8 +295,9 @@ class FeedBase():
         if isinstance(as_dict, Dict):
             as_dict = [as_dict]
         self._records.extend(as_dict)
+        df['dt'] = pd.to_datetime(df['dt'])
         self._in_df = df
-        self._in_df_last_dt = pd.to_datetime(df['dt'].max())
+        self._in_df_last_dt = df['dt'].max()
         self.set_from_first()
 
     def record_from_df(self, df):
@@ -614,6 +615,7 @@ class PositionBase(FeedBase, PlotlyPlotter):
         return self.returns
 
     def get_daily_returns(self):
+        raise NotImplementedError('deprecated due to performance issues')
         # Daily returns are today's position value minus yesterday's
         yest_value = self.get_yest_value()
         # assert isinstance(yest_value, float)
@@ -630,6 +632,7 @@ class PositionBase(FeedBase, PlotlyPlotter):
         if len(getattr(self, '_records', list())) < 2:
             return self.get_value()
         else:
+            raise NotImplementedError('deprecated due to performance issues')
             return self[-2].loc['value']
 
     def get_days_open(self) -> int:
@@ -652,7 +655,7 @@ class PositionBase(FeedBase, PlotlyPlotter):
         if self.is_open:
             self.get_days_open()
             self.get_returns()
-            self.get_daily_returns()
+            # self.get_daily_returns()
 
 
 class ClockBase(object):
@@ -752,8 +755,8 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             self.get_dt()
             self.get_value()
             self.get_returns()
-            self.get_sharpe()
-            self.get_sortino()
+            # self.get_sharpe()
+            # self.get_sortino()
 
     def get_npositions(self) -> float:
         """Update attributes `npositions`, `nshort`, and `nlong`."""
@@ -777,6 +780,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         if len(getattr(self, '_records', list())) < 2:
             return self.get_value()
         else:
+            raise NotImplementedError('deprecated due to performance issues')
             return self[-2].loc['value']
 
     def get_returns(self) -> float:
@@ -786,37 +790,45 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             return float('nan')
         rets = 0.
         daily_rets = 0.
-        yest_value = self.get_yest_value()
-        assert isinstance(yest_value, float)
+        # yest_value = self.get_yest_value()
+        # assert isinstance(yest_value, float)
         for pos in self.positions:
             if pos.is_open:
                 pos.update()
             rets += pos.returns
-            daily_rets += pos.daily_returns
+            # daily_rets += pos.daily_returns
         self.returns = rets
-        self.daily_returns = daily_rets
-        if self.daily_returns - (self.get_value() - yest_value) > 1e-4:
-            breakpoint()
-        self.daily_pct_returns = 100 * self.daily_returns / yest_value
+        # self.daily_returns = daily_rets
+        # if self.daily_returns - (self.get_value() - yest_value) > 1e-4:
+        #     breakpoint()
+        # self.daily_pct_returns = 100 * self.daily_returns / yest_value
         return self.returns
 
     def get_sharpe(self, rf: Union[float, pd.Series] = 0.) -> float:
         """Update the `sharpe` attribute with the current Sharpe ratio."""
+        raise NotImplementedError('deprecated due to performance issues')
         if self.has_records():
             daily_returns = self._get_df(before_dt=True).loc[:, 'daily_returns'].iloc[0]
         else:
+            self.sharpe = 0.
+            return self.sharpe
+        if not daily_returns.std():
             self.sharpe = 0.
             return self.sharpe
         self.sharpe = (daily_returns - rf) / daily_returns.std()
         return self.sharpe
 
     def get_sortino(self, rf: Union[float, pd.Series] = 0.) -> float:
-        """Update the `sortino` attribute with the current Sortino ratio."""
+        """Update the `sortino` attribute with the current Sortino ratio. Deprecated due to performance issues."""
+        raise NotImplementedError('deprecated due to performance issues')
         if self.has_records():
             daily_returns = self._get_df(before_dt=True).loc[:, 'daily_returns'].iloc[0]
         else:
-            self.sharpe = 0.
-            return self.sharpe
+            self.sortino = 0.
+            return self.sortino
+        if not downside_deviation(daily_returns):
+            self.sortino = 0.
+            return self.sortino
         self.sortino = (daily_returns - rf) / downside_deviation(daily_returns)
         return self.sortino
 
