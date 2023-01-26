@@ -138,6 +138,8 @@ class FeedBase():
         """
         Return the list of records as a pandas DataFrame, indexed and sorted
         by datetime (`dt`).
+
+        Note: this is an expensive operation if feed has many fields and records.
         """
         assert self.has_records(), (
             f"'{cls_name(self)}' has no recorded data"
@@ -223,6 +225,15 @@ class FeedBase():
         assert as_dict, (f"no records exist in instance of {cls_name(self)}")
         as_dict[self.df.index.name] = as_ser.name
         return as_dict
+
+    def set_from_prev_in_df(self):
+        # Get last row of _in_df
+        last_row= self._in_df[self._in_df.dt < self.dt].iloc[0, :].to_dict()
+        if 'dt' in last_row:
+            del last_row['dt']
+        # last_record = self._records[-1]
+        # breakpoint()
+        self._set_from_dict(last_row)
 
     def set_from_prev(self):
         """
