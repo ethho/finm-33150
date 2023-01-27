@@ -956,12 +956,12 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         if feed_id is None:
             feed_id: Union[FeedID, None] = infer_price_feed_id(
                 symbol=symbol, feeds=self.feeds)
+        assert feed_id is not None, f"could not infer price FeedID"
         if not isinstance(feed_id, FeedID):
             try:
                 feed_id = FeedID(*feed_id)
             except:
                 raise
-        assert feed_id is not None
 
         # Determine if opposite position exists and close the
         # existing before opening
