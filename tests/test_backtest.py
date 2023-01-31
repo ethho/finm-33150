@@ -1,11 +1,13 @@
 import os
 import pytest
 import pandas as pd
+import ast
 import plotly.express as px
 from ubacktester import (
     PriceFeed, BacktestEngine, BasicStrategy, px_plot, BuyAndHold,
     NaiveQuantileStrat
 )
+from profiler import profiler
 
 
 class TestPriceFeed:
@@ -107,10 +109,15 @@ class TestRunStrategy:
 
     def _get_quantiles(self):
         df = pd.read_csv(self.HW3_QUANTILES_CSV).set_index('date').sort_index()
+        for col in df.columns:
+            df[col] = df[col].apply(ast.literal_eval)
+        # df.reset_index(inplace=True)
         return df
 
     def _get_prices(self):
         df = pd.read_csv(self.HW3_PRICES_CSV).set_index('date').sort_index()
+        # df.index.name = 'dt'
+        # df.reset_index(inplace=True)
         return df
 
     @pytest.mark.parametrize('ratio,start_date,end_date', [
@@ -120,6 +127,7 @@ class TestRunStrategy:
         not (os.path.isfile(HW3_PRICES_CSV) and os.path.isfile(HW3_QUANTILES_CSV)),
         reason="requires tests/data/hw3_*.csv files"
     )
+    @profiler()
     def test_quantile_strat(self, ratio, start_date, end_date) -> pd.DataFrame:
         be = BacktestEngine(
             start_date=start_date,
@@ -133,4 +141,3 @@ class TestRunStrategy:
         strat.name = ratio
         be.add_strategy(strat)
         be.run()
-        return strat.df.reset_index()

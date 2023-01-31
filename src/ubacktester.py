@@ -31,7 +31,7 @@ __all__ = [
 
 # Columns in DataFrames that, when lower-cased,
 # are set as the DateIndex if they match one of these
-DATE_COLS = ('date',)
+DATE_COLS = ('date', 'dt', )
 # FeedID is a container that identifies a value that changes
 # over time. It's a two-length tuple that contains the name
 # of the data feed and the field in that data feed that contains the value.
