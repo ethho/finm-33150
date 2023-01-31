@@ -122,6 +122,8 @@ class TestRunStrategy:
 
     @pytest.mark.parametrize('ratio,start_date,end_date', [
         ('pe', '2015-01-01', '2015-02-01'),
+        # ('pe', '2015-01-01', '2015-03-01'),
+        # ('pe', '2015-01-01', '2015-05-01'),
     ])
     @pytest.mark.skipif(
         not (os.path.isfile(HW3_PRICES_CSV) and os.path.isfile(HW3_QUANTILES_CSV)),
