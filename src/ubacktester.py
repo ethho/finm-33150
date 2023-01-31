@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from profiler import profiler
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger()
@@ -127,6 +128,7 @@ class FeedBase():
     dt: datetime
 
     def has_records(self) -> bool:
+        raise NotImplementedError('deprecated')
         return len(getattr(self, '_records', list())) > 0
 
     @property
@@ -141,22 +143,35 @@ class FeedBase():
 
         Note: this is an expensive operation if feed has many fields and records.
         """
-        assert self.has_records(), (
-            f"'{cls_name(self)}' has no recorded data"
-        )
-        df = pd.DataFrame(data=self._records)
-        assert 'dt' in df.columns, f"'{cls_name(self)}' has no attribute 'dt'"
-        df['dt'] = pd.to_datetime(df['dt'])
-        df.set_index('dt', inplace=True)
-        df.sort_index(inplace=True)
+        df = getattr(self, '_in_df')
         if before_dt:
-            df = df.loc[:self.dt, :]
-        return df
+            return getattr(self, '_in_df').loc[:self.dt, :]
+        else:
+            return getattr(self, '_in_df')
 
     def __getitem__(self, *args, **kw):
         return self._get_df(before_dt=True).iloc.__getitem__(*args, **kw)
 
     def record(self, allow_types=(Number, bool, str, np.datetime64, datetime, date)):
+        """Record `self`'s attributes as a record and append it to `_records`."""
+        d = asdict(
+            self,
+            dict_factory=lambda x: {
+                k: v for (k, v) in x if isinstance(v, allow_types)
+            }
+        )
+        self._append_to_in_df(d)
+    
+    def _append_to_in_df(self, d: Dict):
+        as_df = pd.DataFrame(
+            data=d,
+            columns=d.keys(),
+            index=[d['dt']],
+        )
+        self._in_df = pd.concat([getattr(self, '_in_df', None), as_df])
+        return self._in_df
+
+    def _old_record(self, allow_types=(Number, bool, str, np.datetime64, datetime, date)):
         """Record `self`'s attributes as a record and append it to `_records`."""
         if not hasattr(self, '_records'):
             self._records = list()
@@ -228,7 +243,8 @@ class FeedBase():
 
     def set_from_prev_in_df(self):
         # Get last row of _in_df
-        last_row = self._in_df[self._in_df.dt <= self.dt].iloc[-1, :].to_dict()
+        # last_row = self._in_df[self._in_df.dt <= self.dt].iloc[-1, :].to_dict()
+        last_row = self[-1, :].to_dict()
         if 'dt' in last_row:
             del last_row['dt']
         self._set_from_dict(last_row)
@@ -286,16 +302,11 @@ class FeedBase():
             self.__class__ = make_dataclass(
                 cls_name, fields=fields_to_add, bases=(FeedBase, PlotlyPlotter))
 
-        # Set records from df
-        if not hasattr(self, '_records'):
-            self._records = list()
-        as_dict: List[Dict] = df.to_dict(orient='records')
-        if isinstance(as_dict, Dict):
-            as_dict = [as_dict]
-        self._records.extend(as_dict)
         df['dt'] = pd.to_datetime(df['dt'])
-        self._in_df = df
         self._in_df_last_dt = df['dt'].max()
+        df.set_index('dt', inplace=True)
+        df.sort_index(inplace=True)
+        self._in_df = df
         self.set_from_first()
 
     def record_from_df(self, df):
@@ -627,6 +638,7 @@ class PositionBase(FeedBase, PlotlyPlotter):
         Large source of latency due to call to _get_df, and since this
         is called frequently.
         """
+        raise NotImplementedError('deprecated due to performance issues')
         if len(getattr(self, '_records', list())) < 2:
             return self.get_value()
         else:
@@ -775,6 +787,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
 
     def get_yest_value(self) -> float:
         """Get yesterday's value"""
+        raise NotImplementedError('deprecated due to performance issues')
         if len(getattr(self, '_records', list())) < 2:
             return self.get_value()
         else:
