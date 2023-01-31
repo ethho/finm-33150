@@ -1207,3 +1207,50 @@ class BuyAndHold(StrategyBase):
                 allow_fractional=True,
             )
             self.first_dt = False
+
+@dataclass
+class NaiveQuantileStrat(StrategyBase):
+    """From HW3"""
+    # Proportion of cash_equity
+    # to place on all positions
+    gross_traded_pct: float = 0.1 
+    # Which financial ratio to use
+    ratio: str = 'roi'
+    
+    def buy_top_n(self, pos_size, ratio='roi'):
+        tickers = getattr(self.feeds['quantiles'], f'{ratio}_top')
+        for ticker in tickers:
+            self.buy(
+                symbol=ticker,
+                pos_size=pos_size / len(tickers),
+                feed_id=('prices', ticker),
+                close_opposite=False,
+                allow_fractional=True,
+            )
+    
+    def sell_bot_n(self, pos_size, ratio='roi'):
+        tickers = getattr(self.feeds['quantiles'], f'{ratio}_bot')
+        for ticker in tickers:
+            self.sell(
+                symbol=ticker,
+                pos_size=pos_size / len(tickers),
+                feed_id=('prices', ticker),
+                close_opposite=False,
+                allow_fractional=True,
+            )
+            
+    def start(self):
+        self.starting_cash_equity = self.cash_equity
+
+    def step(self):
+        # If not Monday, skip
+        if not pd.to_datetime(self.dt).day_of_week == 0:
+            return
+        
+        # Close all positions
+        self.exit_all()
+        
+        # Open new set of positions
+        gross_traded_cash = self.gross_traded_pct * self.starting_cash_equity
+        self.buy_top_n(pos_size=gross_traded_cash/2., ratio=self.ratio)
+        self.sell_bot_n(pos_size=gross_traded_cash/2., ratio=self.ratio)
