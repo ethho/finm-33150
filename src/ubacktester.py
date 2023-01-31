@@ -597,7 +597,7 @@ class PositionBase(FeedBase, PlotlyPlotter):
         """
         return (self.cost_to_open() + self.get_returns()) * self.is_open
 
-    def close(self) -> float:
+    def close(self, log=False) -> float:
         """
         Closes the position, setting `is_open` to zero.
         """
@@ -606,7 +606,8 @@ class PositionBase(FeedBase, PlotlyPlotter):
         self.daily_returns = 0.
         self.daily_pct_returns = 0.
         self.is_open = 0
-        logger.log(self.logging_level, f"Closed position {pf(asdict(self))}")
+        if log:
+            logger.log(self.logging_level, f"Closed position {pf(asdict(self))}")
         # breakpoint()
         return self.value_at_close
 
