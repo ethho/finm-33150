@@ -946,17 +946,17 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             if not pos.is_long
         ]
 
-    def open_pos(self, pos: PositionBase):
+    def open_pos(self, pos: PositionBase, fee: float = 0.):
         """
         Opens a new position `pos`, subtracting the cost of opening the position
         from cash equity.
+
+        `fee` is added as a percentage of notional value, in basis points.
         """
-        og_val = self.get_value()
-        self.cash_equity -= pos.cost_to_open()
+        notional_value = pos.cost_to_open()
+        fee_val = notional_value * fee / 1e4
+        self.cash_equity -= notional_value + fee_val
         self.positions.append(pos)
-        if not pos.is_long:
-            # breakpoint()
-            pass
 
     def close(self, pos: PositionBase):
         """
@@ -988,6 +988,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
         close_opposite: bool = False,
         pos_cls: type = PositionBase,
         allow_fractional: bool = False,
+        fee: float = 0.,
     ):
         """
         Enters a position of `nshares` on asset `symbol`, using funds from
@@ -1029,7 +1030,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             feed_id=feed_id,
             allow_fractional=allow_fractional,
         )
-        self.open_pos(pos)
+        self.open_pos(pos, fee=fee)
 
     def buy(self, *args, **kw):
         """Enters a long position. See `_transact` docs."""
