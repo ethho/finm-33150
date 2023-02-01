@@ -186,17 +186,40 @@ class FeedBase():
         return self._in_df
 
     def _append_to_in_df(self, d: Dict):
-        if 'dt' in d:
-            del d['dt']
+        for key in DATE_COLS:
+            if key in d:
+                del d[key]
         if not hasattr(self, '_in_df'):
-            if not hasattr(self, 'clock'):
-                return self._append_to_in_df_slow(d)
-            self._in_df = pd.DataFrame(
-                data=float('nan'), columns=d.keys(),
-                index=self.clock.dti, dtype=float
-            )
+            self._init_in_df(d)
         self._in_df.loc[self.dt, :] = d
         return self._in_df
+
+    def _init_in_df(self, d: Dict):
+        if hasattr(self, 'clock'):
+            # Fix dtypes
+            ser_dict = dict()
+            dtypes = self._get_field_dtypes()
+            for name, val in d.items():
+                dtype = dtypes.get(name, 'object')
+                if dtype is pd._libs.tslibs.timestamps.Timestamp:
+                    dtype = 'datetime64[ns]'
+                ser_dict[name] = pd.Series(
+                    data=[val], dtype=dtype
+                )
+            self._in_df = pd.DataFrame(
+                data=ser_dict, index=self.clock.dti,
+            )
+        else:
+            self._in_df = self._append_to_in_df_slow(d)
+        return self._in_df
+
+    def _get_field_dtypes(self) -> Dict:
+        dtypes = {
+            name: type(getattr(self, name)) for name
+            in self._get_builtin_dtype_fields()
+        }
+        # breakpoint()
+        return dtypes
 
     def _old_record(self, allow_types=(Number, bool, str, np.datetime64, datetime, date)):
         """Record `self`'s attributes as a record and append it to `_records`."""
@@ -1348,6 +1371,10 @@ class BookFeed(FeedBase):
 @dataclass
 class AccumulationStratBase(StrategyBase):
     USE_NS_DT = True
+    i = 0
 
     def step(self):
-        pass
+        self.i += 1
+        if self.i >= 10:
+            breakpoint()
+            pass
