@@ -14,7 +14,6 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from profiler import profiler
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger()
