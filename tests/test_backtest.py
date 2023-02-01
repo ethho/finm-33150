@@ -5,7 +5,7 @@ import ast
 import plotly.express as px
 from ubacktester import (
     PriceFeed, BacktestEngine, BasicStrategy, px_plot, BuyAndHold,
-    NaiveQuantileStrat, ClockBase
+    NaiveQuantileStrat, ClockBase, AccumulationStratBase, TradesFeed, BookFeed,
 )
 from profiler import profiler
 
@@ -82,8 +82,8 @@ class TestRunStrategy:
 
         strat1.plot(
             show=False,
-            include_cols=['value', 'returns', 'nshort', 'nlong'],
-            scale_cols={'nshort': 40, 'nlong': 40}
+            # include_cols=['value', 'returns', 'nshort', 'nlong'],
+            # scale_cols={'nshort': 40, 'nlong': 40}
         )
 
         # Merge with price data and plot
@@ -147,7 +147,6 @@ class TestRunStrategy:
         not (os.path.isfile(HW3_PRICES_CSV) and os.path.isfile(HW3_QUANTILES_CSV)),
         reason="requires tests/data/hw3_*.csv files"
     )
-    @profiler()
     def test_quantile_strat(self, ratio, start_date, end_date) -> pd.DataFrame:
         be = BacktestEngine(
             start_date=start_date,
@@ -178,3 +177,47 @@ class TestRunStrategy:
             show=True,
             include_cols=['returns'],
         )
+
+    HW4_TRADES_CSV = 'tests/data/mini_trades_narrow_BTC-USD_2021.delim'
+
+    def _get_trades(self):
+        fp = self.HW4_TRADES_CSV
+        df = pd.read_csv(fp, delim_whitespace=True)
+        df.rename(columns={
+            'timestamp_utc_nanoseconds': 'dt',
+        }, inplace=True)
+        return df
+
+    # @pytest.mark.parametrize('ratio,start_date,end_date', [
+    #     # ('pe', '2015-01-01', '2015-02-01'),
+    #     # ('pe', '2015-01-01', '2015-03-01'),
+    #     # ('pe', '2015-01-01', '2015-05-01'),
+    #     # ('pe', '2015-01-01', '2015-09-01'),
+    #     ('pe', '2015-01-01', '2016-01-01'),
+    # ])
+    @pytest.mark.skipif(
+        not (os.path.isfile(HW4_TRADES_CSV) and os.path.isfile(HW4_TRADES_CSV)),
+        reason="requires tests/data/*.delim files"
+    )
+    @profiler()
+    def test_accumulate_strat(self):
+        # book = self._get_book()
+        trades = self._get_trades()
+        trades_feed = TradesFeed.from_df(trades)
+        dti = pd.concat([None, trades['dt']]).sort_values().unique()
+        as_dt = pd.to_datetime(dti)
+        # breakpoint()
+
+        be = BacktestEngine(clock=ClockBase(dti))
+        # be.add_feed(trades_feed, name='trades')
+        strat1 = AccumulationStratBase(cash_equity=1e4)
+        be.add_strategy(strat1)
+        be.run()
+
+        # strat1.plot(
+        #     show=False,
+        #     # include_cols=['daily_pct_returns'],
+        #     # scale_cols={'nshort': 40, 'nlong': 40}
+        #     include_cols=['returns', 'nshort', 'nlong', ],
+        #     scale_cols={'nshort': 40, 'nlong': 40, }
+        # )

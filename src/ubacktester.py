@@ -176,13 +176,26 @@ class FeedBase():
         d = self.asdict()
         self._append_to_in_df(d)
 
-    def _append_to_in_df(self, d: Dict):
+    def _append_to_in_df_slow(self, d: Dict):
         as_df = pd.DataFrame(
             data=d,
             columns=d.keys(),
-            index=[d['dt']],
+            index=[self.dt],
         )
         self._in_df = pd.concat([getattr(self, '_in_df', None), as_df])
+        return self._in_df
+
+    def _append_to_in_df(self, d: Dict):
+        if 'dt' in d:
+            del d['dt']
+        if not hasattr(self, '_in_df'):
+            if not hasattr(self, 'clock'):
+                return self._append_to_in_df_slow(d)
+            self._in_df = pd.DataFrame(
+                data=float('nan'), columns=d.keys(),
+                index=self.clock.dti, dtype=float
+            )
+        self._in_df.loc[self.dt, :] = d
         return self._in_df
 
     def _old_record(self, allow_types=(Number, bool, str, np.datetime64, datetime, date)):
@@ -251,7 +264,7 @@ class FeedBase():
         """
         as_ser = self.df.iloc[0, :]
         as_dict = as_ser.to_dict()
-        assert as_dict, (f"no records exist in instance of {cls_name(self)}")
+        # assert as_dict, (f"no records exist in instance of {cls_name(self)}")
         as_dict[self.df.index.name] = as_ser.name
         return as_dict
 
@@ -444,6 +457,8 @@ class PlotlyPlotter:
         with a numeric data type.
         Passing `show=False` will not show the figure.
         """
+        if not in_df.index.name or in_df.index.name in ['index', ] + list(DATE_COLS):
+            in_df.index.name = 'dt'
         df = in_df.reset_index()
 
         if only_numeric:
@@ -704,7 +719,7 @@ class ClockBase(object):
     size of the backtest based on a pandas DatetimeIndex.
     """
 
-    def __init__(self, dti: Union[pd.DatetimeIndex, pd.Int64Index]):
+    def __init__(self, dti: Union[pd.DatetimeIndex, pd.Index]):
         self.dti = dti
         self.i = 0
         self.dt = self.dti[self.i]
@@ -1029,6 +1044,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
             feed_id=feed_id,
             allow_fractional=allow_fractional,
         )
+        pos.clock = self.clock
         self.open_pos(pos, fee=fee)
 
     def buy(self, *args, **kw):
@@ -1302,3 +1318,36 @@ class NaiveQuantileStrat(StrategyBase):
         gross_traded_cash = self.gross_traded_pct * self.starting_cash_equity
         self.buy_top_n(pos_size=gross_traded_cash/2., ratio=self.ratio)
         self.sell_bot_n(pos_size=gross_traded_cash/2., ratio=self.ratio)
+
+
+@dataclass
+class TradesFeed(FeedBase):
+    USE_NS_DT = True
+
+    # timestamp_utc_nanoseconds: int
+    name: str
+    PriceMillionths: int = 0
+    SizeBillionths: int = 0
+    Side: int = 0
+
+@dataclass
+class BookFeed(FeedBase):
+    USE_NS_DT = True
+
+    # timestamp_utc_nanoseconds: int
+    Ask1PriceMillionths: int
+    Bid1PriceMillionths: int
+    Ask2PriceMillionths: int
+    Bid2PriceMillionths: int
+    Bid1SizeBillionths: int
+    Ask1SizeBillionths: int
+    Bid2SizeBillionths: int
+    Ask2SizeBillionths: int
+
+
+@dataclass
+class AccumulationStratBase(StrategyBase):
+    USE_NS_DT = True
+
+    def step(self):
+        pass
