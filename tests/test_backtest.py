@@ -5,9 +5,17 @@ import ast
 import plotly.express as px
 from ubacktester import (
     PriceFeed, BacktestEngine, BasicStrategy, px_plot, BuyAndHold,
-    NaiveQuantileStrat
+    NaiveQuantileStrat, ClockBase
 )
 from profiler import profiler
+
+
+class PriceFeedNS(PriceFeed):
+    USE_NS_DT = True
+
+
+class BuyAndHoldNS(BuyAndHold):
+    USE_NS_DT = True
 
 
 class TestPriceFeed:
@@ -93,6 +101,7 @@ class TestRunStrategy:
         be = BacktestEngine(
             start_date='2018-01-01',
             end_date='2019-12-01',
+            step_size='7D',
         )
         feed1 = PriceFeed.from_df(px.data.stocks())
         be.add_feed(feed1, name='price')
@@ -103,8 +112,15 @@ class TestRunStrategy:
 
         strat1.plot(
             show=False,
-            include_cols=['daily_pct_returns'],
+            # include_cols=['daily_pct_returns'],
             # scale_cols={'nshort': 40, 'nlong': 40}
+            include_cols=['returns', 'nshort', 'nlong', ],
+            scale_cols={'nshort': 40, 'nlong': 40, }
+        )
+
+        strat1.positions[0].plot(
+            show=True,
+            include_cols=['returns', ],
         )
 
     def _get_quantiles(self):
@@ -121,9 +137,11 @@ class TestRunStrategy:
         return df
 
     @pytest.mark.parametrize('ratio,start_date,end_date', [
-        ('pe', '2015-01-01', '2015-02-01'),
+        # ('pe', '2015-01-01', '2015-02-01'),
         # ('pe', '2015-01-01', '2015-03-01'),
         # ('pe', '2015-01-01', '2015-05-01'),
+        # ('pe', '2015-01-01', '2015-09-01'),
+        ('pe', '2015-01-01', '2016-01-01'),
     ])
     @pytest.mark.skipif(
         not (os.path.isfile(HW3_PRICES_CSV) and os.path.isfile(HW3_QUANTILES_CSV)),
@@ -143,3 +161,20 @@ class TestRunStrategy:
         strat.name = ratio
         be.add_strategy(strat)
         be.run()
+
+    def test_nanosec_dt(self):
+        df = px.data.stocks()
+        df['date'] = pd.to_datetime(df['date']).astype(int)
+        ns_clock = ClockBase(df['date'])
+        be = BacktestEngine(clock=ns_clock)
+        feed1 = PriceFeedNS.from_df(px.data.stocks())
+        be.add_feed(feed1, name='price')
+        assert len(be._feeds) == 1
+        strat1 = BuyAndHoldNS(cash_equity=1e4, symbol='AAPL', pos_size=100.)
+        be.add_strategy(strat1)
+        be.run()
+
+        strat1.plot(
+            show=True,
+            include_cols=['returns'],
+        )

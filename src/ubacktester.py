@@ -125,7 +125,7 @@ class FeedBase():
     checking that the current datetime `dt` is in bounds with pre-populated
     records. It an also export these records as a DataFrame.
     """
-    dt: datetime
+    dt: Union[datetime, int]
 
     def has_records(self) -> bool:
         raise NotImplementedError('deprecated')
@@ -292,6 +292,15 @@ class FeedBase():
                                f"not exist in instance of {cls_name(self)}")
             setattr(self, k, v)
 
+    @classmethod
+    def to_datetime(cls, val: Any):
+        dt = pd.to_datetime(val)
+        if dt is None:
+            return None
+        elif getattr(cls, 'USE_NS_DT', False):
+            dt = dt.astype(int)
+        return dt
+
     def _record_from_df(self, in_df: pd.DataFrame):
         """
         Load records from a pandas DataFrame, and sets `self`'s attributes to
@@ -306,6 +315,7 @@ class FeedBase():
             df.sort_values(by='dt', inplace=True)
 
         # Add fields that are not in the current dataclass
+        use_ns_dt = getattr(self, 'USE_NS_DT', False)
         fields_to_add = list()
         for col in df.columns:
             if col not in self.__dataclass_fields__.keys():
@@ -314,10 +324,13 @@ class FeedBase():
         if fields_to_add:
             field_names = [col[0] for col in fields_to_add]
             cls_name = f"Feed_{sha1(field_names)}"
-            self.__class__ = make_dataclass(
+            _class = make_dataclass(
                 cls_name, fields=fields_to_add, bases=(FeedBase, PlotlyPlotter))
+            if use_ns_dt:
+                _class.USE_NS_DT = True
+            self.__class__ = _class
 
-        df['dt'] = pd.to_datetime(df['dt'])
+        df['dt'] = self.to_datetime(df['dt'])
         self._in_df_last_dt = df['dt'].max()
         df.set_index('dt', inplace=True)
         df.sort_index(inplace=True)
@@ -343,7 +356,8 @@ class FeedBase():
         """
         if name is None and hasattr(df, 'name'):
             name = df.name
-        feed = cls(*args, dt=np.datetime64(None), name=name, **kw)
+        feed = cls(*args, dt=cls.to_datetime(None), name=name, **kw)
+        # feed = cls(*args, dt=np.datetime64(None), name=name, **kw)
         feed.record_from_df(df)
         return feed
 
@@ -544,11 +558,11 @@ class PositionBase(FeedBase, PlotlyPlotter):
     # Immutable. Total value of the position when it was closed.
     value_at_close: Optional[float] = None
     # Immutable. datetime when the position was opened
-    open_dt: np.datetime64 = field(init=False)
+    open_dt: Union[np.datetime64, int] = field(init=False)
     # Number of days that the position was open.
     days_open: int = 0
     # The current datetime, see `FeedBase`.
-    dt: np.datetime64 = field(init=False)
+    dt: Union[np.datetime64, int] = field(init=False)
     # Logging level for opening and closing trades
     logging_level: int = logging.DEBUG
     # Whether to allow fractional shares when calculating nshares from pos_size
@@ -663,7 +677,8 @@ class PositionBase(FeedBase, PlotlyPlotter):
 
     def get_days_open(self) -> int:
         """Update the `days_open` attribute."""
-        self.days_open = (self.get_dt() - self.open_dt).days
+        diff = self.get_dt() - self.open_dt
+        self.days_open = getattr(diff, 'days', -1)
         return self.days_open
 
     @property
@@ -690,7 +705,7 @@ class ClockBase(object):
     size of the backtest based on a pandas DatetimeIndex.
     """
 
-    def __init__(self, dti: pd.DatetimeIndex):
+    def __init__(self, dti: Union[pd.DatetimeIndex, pd.Int64Index]):
         self.dti = dti
         self.i = 0
         self.dt = self.dti[self.i]
@@ -744,7 +759,7 @@ class StrategyBase(FeedBase, PlotlyPlotter):
     # Amount of cash equity to start with
     cash_equity: float = 10000.
     # Current datetime, see `FeedBase`
-    dt: Optional[np.datetime64] = None
+    dt: Optional[Union[np.datetime64, int]] = None
     # Immutable. Number of open positions
     npositions: int = 0
     # Immutable. Number of open short positions
@@ -1049,8 +1064,9 @@ class BacktestEngine(object):
     """Singleton that manages a backtest."""
 
     def __init__(
-        self, start_date: str, end_date: str, step_size: str = '1D',
-        normalize_to_midnight: bool = True,
+        self, start_date: Optional[str] = None, end_date: Optional[str] = None,
+        step_size: str = '1D',
+        normalize_to_midnight: bool = True, clock: Optional[ClockBase] = None,
     ):
         """
         Initialize a backtest starting at `start_date` and ending at
@@ -1065,11 +1081,14 @@ class BacktestEngine(object):
         self._clocks: Dict[str, ClockBase] = dict()
 
         # Define first clock
-        self.add_clock(ClockBase(pd.date_range(
-            start=start_date, end=end_date,
-            normalize=normalize_to_midnight,
-            freq=step_size,
-        )), name='main')
+        if not clock:
+            assert start_date and end_date, f"must pass 'start_date' and 'end_date'"
+            clock = ClockBase(pd.date_range(
+                start=start_date, end=end_date,
+                normalize=normalize_to_midnight,
+                freq=step_size,
+            ))
+        self.add_clock(clock, name='main')
 
         self.dt = None
 
@@ -1205,7 +1224,7 @@ class BasicStrategy(StrategyBase):
             self.sell(nshares=100., symbol='AAPL')
 
         # Drop into an interactive debugging session at a particular timepoint
-        # if self.dt and self.dt >= pd.to_datetime('2018-10-28'):
+        # if self.dt and self.dt >= self.to_datetime('2018-10-28'):
         #     breakpoint()
 
         if self.any_long():
