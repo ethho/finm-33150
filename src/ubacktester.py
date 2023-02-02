@@ -1352,6 +1352,10 @@ class TradesFeed(FeedBase):
     PriceMillionths: int = 0
     SizeBillionths: int = 0
     Side: int = 0
+    is_qual: int = 0
+    cum_volm_side: int = 0
+    cum_volm_all: int = 0
+    cum_volm_qual: int = 0
 
 @dataclass
 class BookFeed(FeedBase):
