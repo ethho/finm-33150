@@ -96,6 +96,8 @@ class AccumulateRunner(dict):
         fee_rate = 50 # basis points on the notional
 
         df = self.get_trades_data(fp=self.HW4_TRADES_CSV, downsample_rate=self.downsample_rate)
+        if not 'dt' in df.columns:
+            df.reset_index(inplace=True)
 
         # Define masks for same side and qualifying trades
         same_side = df['Side'] * self.side > 0
@@ -111,7 +113,7 @@ class AccumulateRunner(dict):
         df = df.convert_dtypes()
 
         # Calculate target participation for each qualifying trade (billionths).
-        # In theory, the below calculation should get us the same as 
+        # In theory, the below calculation should get us the same as
         # df['cum_volm_qual'] * target_prt_rate. They're not exactly equal
         # due to the rounding we do with astype(int)
         df['target_prt'] = (same_side.astype(int) * df['is_qual'] * target_prt_rate * df['SizeBillionths'])#.astype(int)
@@ -125,12 +127,22 @@ class AccumulateRunner(dict):
         df['vwap_cumsum'] = df['notional'].cumsum().astype(int).div(df['target_prt'].cumsum().astype(int))
         df['fees'] = (df['notional'] * fee_rate / 1e4).astype(int)
         df['market_vwap'] = (
-            (df['SizeBillionths'] * (df['PriceMillionths'] / 1e6)).cumsum() / 
+            (df['SizeBillionths'] * (df['PriceMillionths'] / 1e6)).cumsum() /
             (df['SizeBillionths']).cumsum())
+
+        df['since_arrival'] = df['dt_ds'] - df['dt_ds'].iloc[0]
+
+        # DEBUG
+        # df['market_vwap_side'] = (
+        #     (df.loc[same_side, 'SizeBillionths'] * (df.loc[same_side, 'PriceMillionths'] / 1e6)).cumsum() /
+        #     (df.loc[same_side, 'SizeBillionths']).cumsum())
+        # assert not (df['market_vwap'] - df['vwap_cumsum'] > 2.).any()
+        vwap = (
+            (df['SizeBillionths'] * (df['PriceMillionths'] / 1e6)).sum() /
+            (df['SizeBillionths']).sum())
         sample = df.iloc[200:210, :]
 
         breakpoint()
-        assert not (df['market_vwap'] - df['vwap_cumsum'] > 2.).any()
         return df
 
     @profiler()
