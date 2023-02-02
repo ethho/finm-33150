@@ -8,7 +8,7 @@ import logging
 from typing import Dict, List, Optional, Union, Tuple, Callable, Any
 from datetime import datetime, date
 from dataclasses import dataclass, field, asdict, make_dataclass
-from math import sqrt
+from math import sqrt, ceil
 from numbers import Number
 import numpy as np
 import pandas as pd
@@ -1358,23 +1358,67 @@ class BookFeed(FeedBase):
     USE_NS_DT = True
 
     # timestamp_utc_nanoseconds: int
-    Ask1PriceMillionths: int
-    Bid1PriceMillionths: int
-    Ask2PriceMillionths: int
-    Bid2PriceMillionths: int
-    Bid1SizeBillionths: int
-    Ask1SizeBillionths: int
-    Bid2SizeBillionths: int
-    Ask2SizeBillionths: int
+    name: str
+    Ask1PriceMillionths: int = 0
+    Bid1PriceMillionths: int = 0
+    Ask2PriceMillionths: int = 0
+    Bid2PriceMillionths: int = 0
+    Bid1SizeBillionths: int = 0
+    Ask1SizeBillionths: int = 0
+    Bid2SizeBillionths: int = 0
+    Ask2SizeBillionths: int = 0
 
+def downsample_to_pow(val: int, pow10: int = 6) -> int:
+    n = pow10 + 1
+    hi, lo = str(val)[:-n], str(val)[-n:]
+    roundup = lambda x: int(ceil(x / 10.0)) * 10
+    suffix = str(roundup(int(lo[:2])))[0] + (pow10 * '0')
+    final = int(hi + suffix)
+    assert len(str(final)) == len(str(val))
+    return final
 
 @dataclass
 class AccumulationStratBase(StrategyBase):
     USE_NS_DT = True
+    qualifying_reaction_time_pow10: int = 6 # 1e6 ns, or 1 ms
+    side: int = 1
     i = 0
+
+    def last_n_trades(self, n: int = 1):
+        df = self.feeds['trades'][-n:]
+        return df
+
+    def last_n_qual(self, n: int = 1):
+        """Get the last `n` qualifying trades."""
+        # If I want to achieve a 3% participation rate overall, what should I set my target rate to?
+
+        df = self.last_n_trades(5)
+        df['dt_ds'] = (
+            pd.Series(df.index, dtype=np.int64)
+            .apply(downsample_to_pow, args=[self.qualifying_reaction_time_pow10])
+            .values
+        )
+
+        price_func = 'min' if self.side < 0 else 'max'
+        grp = df.groupby('dt_ds', group_keys=False).apply(self._mark_qualified)
+        grp.index.name = 'dt'
+        # breakpoint()
+        return df
+
+    def _mark_qualified(self, df):
+        if len(df) == 1:
+            df['is_qual'] = 1
+            return df
+        if self.side > 0:
+            qual_price = df['PriceMillionths'].max()
+        else:
+            qual_price = df['PriceMillionths'].min()
+        qualified_mask = df['PriceMillionths'] == qual_price
+        df['is_qual'] = qualified_mask.astype(int)
+        # breakpoint()
+        return df
 
     def step(self):
         self.i += 1
-        if self.i >= 10:
-            breakpoint()
-            pass
+        if self.i % 1000 == 0:
+            last = self.last_n_qual(5)['Side'].sum()
