@@ -1,6 +1,7 @@
 import os
 import numpy as np
 from math import ceil
+import multiprocessing
 import pandas as pd
 import sys
 from dataclasses import dataclass, field, asdict, make_dataclass
@@ -44,8 +45,14 @@ class AccumulateRunner(dict):
             .apply(downsample_to_pow, args=[self.downsample_rate])
             .values
         )
-        grp = df.groupby('dt_ds', group_keys=False).apply(self._mark_qualified)
+        df['Side'] = df['Side'].replace(0, -1 * self.side)
+        try:
+            df['side_sign'] = (df['Side'] / df['Side'].abs()).astype(int)
+        except pd.errors.IntCastingNaNError:
+            raise
+        grp = df.groupby(['dt_ds', 'side_sign'], group_keys=False).apply(self._mark_qualified)
         grp.index.name = 'dt'
+        grp.drop(columns='side_sign', inplace=True)
         # breakpoint()
         return grp
 
@@ -53,12 +60,15 @@ class AccumulateRunner(dict):
         if len(df) == 1:
             df['is_qual'] = 1
             return df
-        if self.side > 0:
+        side = df['side_sign'].iloc[0]
+        # assert (df['side_sign'] == side).all()
+        if side > 0:
             qual_price = df['PriceMillionths'].max()
         else:
             qual_price = df['PriceMillionths'].min()
         qualified_mask = df['PriceMillionths'] == qual_price
         df['is_qual'] = qualified_mask.astype(int)
+        # breakpoint()
         return df
 
     @memoize_df(cache_dir='data/memoize', cache_lifetime_days=None)
@@ -79,7 +89,7 @@ class AccumulateRunner(dict):
         )
         df.drop(columns=['received_utc_nanoseconds'], inplace=True)
         # assert not (df['Side'] == 0).any()
-        df = df[df['Side'] / side > 0]
+        # df = df[df['Side'] / side > 0]
         df.set_index('dt', inplace=True)
         df = df.loc[start_date_ns:].iloc[:int(row_limit)]
         df = self.mark_qualified_trades(df)
@@ -111,7 +121,7 @@ class AccumulateRunner(dict):
         target_prt_rate=0.01, # 1% of traded volume
         target_notional=1e6, # stop trading when notional has reached this
         fee_rate=50, # basis points on notional
-        row_limit=1e5, # number of trades to pull from data
+        row_limit=4e5, # number of trades to pull from data
     ):
         start_date_ns = pd.to_datetime(start_date, unit='ns').value
         df = self.get_trades_data(
@@ -147,7 +157,10 @@ class AccumulateRunner(dict):
         # Calculate notional (billionths), fees (billionths), and VWAP
         df['notional'] = (df['target_prt'] * (df['PriceMillionths'] / 1e6))
         # df['notional_cumsum'] = df['notional'].cumsum().astype(int)
-        df['vwap_cumsum'] = df['notional'].cumsum().div(df['target_prt'].cumsum())
+        try:
+            df['vwap'] = df['notional'].cumsum().div(df['target_prt'].cumsum().replace(0., pd.NA))
+        except ZeroDivisionError:
+            raise
         df['fees'] = (df['notional'] * fee_rate / 1e4).astype(int)
         df['market_vwap'] = (
             (df['SizeBillionths'] * (df['PriceMillionths'] / 1e6)).cumsum() /
@@ -162,8 +175,9 @@ class AccumulateRunner(dict):
         vwap = (
             (df['SizeBillionths'] * (df['PriceMillionths'] / 1e6)).sum() /
             (df['SizeBillionths']).sum())
-        print(f'{vwap=}')
-        assert not (df['market_vwap'] > df['vwap_cumsum']).sum()
+        # print(f'{vwap=}')
+        # assert not (df['market_vwap'] > df['vwap']).sum()
+        assert vwap < df['vwap'].iloc[-1], f"{vwap=} < {df['vwap'].iloc[-1]=}"
 
         traded_notional = df['notional'].sum() / 1e9
         if traded_notional < target_notional:
@@ -178,13 +192,31 @@ class AccumulateRunner(dict):
             df = df.loc[:last_idx]
         return df
 
-if __name__ == '__main__':
-    runner = AccumulateRunner(side=1, downsample_rate=6)
-    df = runner.run_accumulate_strat(
+def accumulate_runner_wrapper(start_date):
+    kwargs = dict(
         fp='data/Crypto/2021/For_Homework/trades_narrow_BTC-USD_2021.delim',
-        start_date='1970-01-01', # trim data before this date
+        # start_date='1970-01-01', # trim data before this date
+        start_date=start_date, # trim data before this date
         target_prt_rate=0.01, # 1% of traded volume
         target_notional=1e6, # stop trading when notional has reached this
         fee_rate=50, # basis points on notional
-        row_limit=1e5, # number of trades to pull from data
+        row_limit=4e5, # number of trades to pull from data
     )
+    try:
+        df = runner.run_accumulate_strat(**kwargs)
+    except (AssertionError, InsufficientRowsError) as err:
+        print(f"Error while processing call with {kwargs=}: {str(err)}")
+        return
+    return df
+
+if __name__ == '__main__':
+    runner = AccumulateRunner(side=1, downsample_rate=6)
+    start_dates = [
+        dt.strftime('%Y-%m-%d') for dt in 
+        pd.date_range('2021-04-10', '2021-04-25')
+    ]
+    # with multiprocessing.Pool(4) as p:
+    #     results = p.map(globals()[f'accumulate_runner_wrapper'], start_dates)
+    for start_date in start_dates:
+        df = accumulate_runner_wrapper(start_date)
+        
