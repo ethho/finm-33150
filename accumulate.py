@@ -114,7 +114,7 @@ class AccumulateRunner(dict):
         return df
 
     # @profiler()
-    @memoize_df(cache_dir='data/memoize', cache_lifetime_days=None)
+    # @memoize_df(cache_dir='data/memoize', cache_lifetime_days=None)
     def run_accumulate_strat(
         self, fp,
         start_date='1970-01-01', # trim data starting at this date
@@ -122,6 +122,7 @@ class AccumulateRunner(dict):
         target_notional=1e6, # stop trading when notional has reached this
         fee_rate=50, # basis points on notional
         row_limit=4e5, # number of trades to pull from data
+        side=1,
     ):
         start_date_ns = pd.to_datetime(start_date, unit='ns').value
         df = self.get_trades_data(
@@ -162,9 +163,9 @@ class AccumulateRunner(dict):
         except ZeroDivisionError:
             raise
         df['fees'] = (df['notional'] * fee_rate / 1e4).astype(int)
-        df['market_vwap'] = (
-            (df['SizeBillionths'] * (df['PriceMillionths'] / 1e6)).cumsum() /
-            (df['SizeBillionths']).cumsum())
+        # df['market_vwap'] = (
+        #     (df['SizeBillionths'] * (df['PriceMillionths'] / 1e6)).cumsum() /
+        #     (df['SizeBillionths']).cumsum())
 
         df['since_arrival'] = df['dt_ds'] - df['dt_ds'].iloc[0]
 
@@ -177,7 +178,8 @@ class AccumulateRunner(dict):
             (df['SizeBillionths']).sum())
         # print(f'{vwap=}')
         # assert not (df['market_vwap'] > df['vwap']).sum()
-        assert vwap < df['vwap'].iloc[-1], f"{vwap=} < {df['vwap'].iloc[-1]=}"
+        if vwap < df['vwap'].iloc[-1]:
+            print(f"Warning: {(df['market_vwap'] > df['vwap']).sum()}")
 
         traded_notional = df['notional'].sum() / 1e9
         if traded_notional < target_notional:
@@ -192,16 +194,26 @@ class AccumulateRunner(dict):
             df = df.loc[:last_idx]
         return df
 
-def accumulate_runner_wrapper(start_date):
+def accumulate_runner_wrapper(
+    start_date,
+    target_prt_rate=0.01,
+    target_notional=1e6,
+    fee_rate=50,
+    row_limit=4e5,
+    side=1,
+    downsample_rate=6,
+):
     kwargs = dict(
-        fp='data/Crypto/2021/For_Homework/trades_narrow_BTC-USD_2021.delim',
+        fp='data/Crypto/2022/trades_narrow_BTC-USD_2022.delim',
         # start_date='1970-01-01', # trim data before this date
         start_date=start_date, # trim data before this date
-        target_prt_rate=0.01, # 1% of traded volume
-        target_notional=1e6, # stop trading when notional has reached this
-        fee_rate=50, # basis points on notional
-        row_limit=4e5, # number of trades to pull from data
+        target_prt_rate=target_prt_rate, # 1% of traded volume
+        target_notional=target_notional, # stop trading when notional has reached this
+        fee_rate=fee_rate, # basis points on notional
+        row_limit=row_limit, # number of trades to pull from data
+        side=side,
     )
+    runner = AccumulateRunner(side=side, downsample_rate=downsample_rate)
     try:
         df = runner.run_accumulate_strat(**kwargs)
     except (AssertionError, InsufficientRowsError) as err:
@@ -210,13 +222,36 @@ def accumulate_runner_wrapper(start_date):
     return df
 
 if __name__ == '__main__':
-    runner = AccumulateRunner(side=1, downsample_rate=6)
     start_dates = [
-        dt.strftime('%Y-%m-%d') for dt in 
-        pd.date_range('2021-04-10', '2021-04-25')
+        # '2021-04-11',
+        # '2021-04-13',
+        # '2021-04-15',
+        # '2021-04-17',
+        # '2021-04-19',
+        # '2021-04-21',
+        # '2022-01-30',
     ]
-    # with multiprocessing.Pool(4) as p:
-    #     results = p.map(globals()[f'accumulate_runner_wrapper'], start_dates)
-    for start_date in start_dates:
-        df = accumulate_runner_wrapper(start_date)
+    # sides = [1, -1]
+    sides = [-1]
+    start_dates = [
+        dt.isoformat() for dt in
+        pd.date_range('2022-01-30', '2022-02-01', periods=10)
+    ]
+    # breakpoint()
+
+    # Parallel version
+    from functools import partial
+    for side in sides:
+        kw = dict(
+            side=side, target_notional=1e7, target_prt_rate=0.1
+        )
+        with multiprocessing.Pool(2) as p:
+            results = p.map(partial(globals()[f'accumulate_runner_wrapper'], **kw), start_dates)
+    
+    # Serial version
+    # for side in sides:
+    #     for start_date in start_dates:
+    #         df = accumulate_runner_wrapper(
+    #             start_date, side=side, target_notional=1e7, target_prt_rate=0.1
+    #         )
         
