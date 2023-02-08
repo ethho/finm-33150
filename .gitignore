@@ -162,3 +162,4 @@ cython_debug/
 secrets.json
 data
 !tests/data/
+zip
