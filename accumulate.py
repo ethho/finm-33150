@@ -97,22 +97,6 @@ class AccumulateRunner(dict):
         # breakpoint()
         return df
 
-    def _get_book_data(self, fp, start_ns: int, end_ns: int):
-        df = pd.read_csv(fp, delim_whitespace=True)
-        df.rename(columns={
-            'timestamp_utc_nanoseconds': 'dt',
-        }, inplace=True)
-        df.sort_values(by='dt', inplace=True)
-        # breakpoint()
-        print(
-            f"Dates in book data {fp=} range between "
-            f"{df['dt'].min()} ({pd.to_datetime(df['dt'].min())}) and "
-            f"{df['dt'].max()} ({pd.to_datetime(df['dt'].max())})"
-        )
-        # df = df[start_ns <= df['dt'] <= end_ns]
-        # assert not df.empty, f"empty df between {start_ns=} and {end_ns=}"
-        return df
-
     # @profiler()
     # @memoize_df(cache_dir='data/memoize', cache_lifetime_days=None)
     def run_accumulate_strat(
@@ -178,8 +162,8 @@ class AccumulateRunner(dict):
             (df['SizeBillionths']).sum())
         # print(f'{vwap=}')
         # assert not (df['market_vwap'] > df['vwap']).sum()
-        if vwap < df['vwap'].iloc[-1]:
-            print(f"Warning: {(df['market_vwap'] > df['vwap']).sum()}")
+        # if vwap < df['vwap'].iloc[-1]:
+        #     print(f"Warning: {(df['market_vwap'] > df['vwap']).sum()}")
 
         traded_notional = df['notional'].sum() / 1e9
         if traded_notional < target_notional:
@@ -235,7 +219,7 @@ if __name__ == '__main__':
     sides = [-1]
     start_dates = [
         dt.isoformat() for dt in
-        pd.date_range('2022-01-30', '2022-02-01', periods=10)
+        pd.date_range('2022-02-01', '2022-02-03', periods=20)
     ]
     # breakpoint()
 
@@ -243,7 +227,7 @@ if __name__ == '__main__':
     from functools import partial
     for side in sides:
         kw = dict(
-            side=side, target_notional=1e7, target_prt_rate=0.1
+            side=side, target_notional=1e7, target_prt_rate=0.1, downsample_rate=8,
         )
         with multiprocessing.Pool(2) as p:
             results = p.map(partial(globals()[f'accumulate_runner_wrapper'], **kw), start_dates)
