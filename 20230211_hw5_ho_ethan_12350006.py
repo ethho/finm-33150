@@ -306,80 +306,78 @@ if __name__ == '__main__':
         ) for country in countries
     }
     yc_daily = pd.concat(yc_dict.values(), axis=1)
-    vnm = yc_dict['VNM']
-    vnm
+    # vnm = yc_dict['VNM']
 
     # # Compute ZCB Curves
     # Below, I define a modified version of Professor Boonstra's `compute_zcb_curve` function.
-
     get_col_groups(tuple(yc_daily.columns.tolist()))
 
     # zcb_daily = pd.concat(get_zcb_curves(yc_daily).values(), axis=1)
-    vnm_zcb = get_zcb_curves(yc_daily)['vnm'].loc['2014-12-01':]
-    vnm_zcb
-
+    zcb = get_zcb_curves(yc_daily)
     # px_plot(
-    #     vnm_zcb[['vnm_rt']],
+    #     zcb['vnm'][['vnm_rt']],
     #     # include_cols = ['5y_price'],
     #     title = 'VNM 5-Year Swap Price',
     # )
 
-    df_daily = pd.DataFrame({
-        'fund_rate': ois_daily['gbr_0.08y'] + 0.5,
-        'usd/gbp': fx_daily['USD/GBP'],
-        'usd/vnd': fx_daily['USD/VND'],
-        'vnm_rate': vnm_zcb['vnm_5y_zcb'],
-        'vnm_rt_new': vnm_zcb['vnm_rt'],
-        'vnm_rs_new': vnm_zcb['vnm_rs'],
-    })
+    for country in zcb.keys():
+        print(f"Processing DataFrame for {country=}")
+        df_daily = pd.DataFrame({
+            'fund_rate': ois_daily['gbr_0.08y'] + 0.5,
+            'usd/gbp': fx_daily['USD/GBP'],
+            'usd/vnd': fx_daily['USD/VND'],
+            f'{country}_rate': zcb[f'{country}'][f'{country}_5y_zcb'],
+            f'{country}_rt_new': zcb[f'{country}'][f'{country}_rt'],
+            f'{country}_rs_new': zcb[f'{country}'][f'{country}_rs'],
+        })
 
-    first_non_null_row = lambda x: x[~x.isnull().any(axis=1)].index[0]
-    df_daily = df_daily.loc[first_non_null_row(df_daily):, :].copy()
-    assert not df_daily.isnull().any().any()
-    df_daily['gbp/vnd'] = df_daily['usd/vnd'] / df_daily['usd/gbp']
-    df_daily['lend_gt_fund'] = ((df_daily['vnm_rate'] * 100) < df_daily['fund_rate']).astype(int)
+        first_non_null_row = lambda x: x[~x.isnull().any(axis=1)].index[0]
+        df_daily = df_daily.loc[first_non_null_row(df_daily):, :].copy()
+        assert not df_daily.isnull().any().any()
+        df_daily['gbp/vnd'] = df_daily['usd/vnd'] / df_daily['usd/gbp']
+        df_daily['lend_gt_fund'] = ((df_daily[f'{country}_rate'] * 100) < df_daily['fund_rate']).astype(int)
 
-    # Interest paid for funding in USD
-    df_daily['fund_deficit'] = -8e6 * (df_daily['fund_rate'] / 100) / (360 * df_daily['usd/gbp'])
-    df_daily['next_wed'] = pd.to_datetime([get_next_day_of_week(day, 2) for day in df_daily.index])
+        # Interest paid for funding in USD
+        df_daily['fund_deficit'] = -8e6 * (df_daily['fund_rate'] / 100) / (360 * df_daily['usd/gbp'])
+        df_daily['next_wed'] = pd.to_datetime([get_next_day_of_week(day, 2) for day in df_daily.index])
 
-    fund_deficit_wk = df_daily.groupby('next_wed').agg({
-        'fund_deficit': 'sum',
-    })
-    fund_deficit_wk.index = pd.to_datetime(fund_deficit_wk.index)
-    fund_deficit_wk
+        fund_deficit_wk = df_daily.groupby('next_wed').agg({
+            'fund_deficit': 'sum',
+        })
+        fund_deficit_wk.index = pd.to_datetime(fund_deficit_wk.index)
+        fund_deficit_wk
 
-    df = fund_deficit_wk.merge(df_daily, how='left', left_index=True, right_index=True, suffixes=(None, '_daily')).iloc[:-1]
+        df = fund_deficit_wk.merge(df_daily, how='left', left_index=True, right_index=True, suffixes=(None, '_daily')).iloc[:-1]
 
-    # I wonder for how many weeks we would not take a position, i.e. the lending rate is less than 50 bp higher than the funding rate. I'll make note of when this happened, because I might want to analyze strategy performance around these dates later. Intuitively, they represent periods when the lending currency is weak, for instance when the Vietnamese economy suffers a dramatic downturn.
-    print(f"Lending rate is less than 50 bp higher than funding rate for {df['lend_gt_fund'].astype(int).sum()} weeks in this period.")
-    # df[df['lend_gt_fund']].index
+        # I wonder for how many weeks we would not take a position, i.e. the lending rate is less than 50 bp higher than the funding rate. I'll make note of when this happened, because I might want to analyze strategy performance around these dates later. Intuitively, they represent periods when the lending currency is weak, for instance when the Vietnamese economy suffers a dramatic downturn.
+        print(f"Lending rate is less than 50 bp higher than funding rate for {df['lend_gt_fund'].astype(int).sum()} weeks in this period.")
+        # df[df['lend_gt_fund']].index
 
-    # Now, let's calculate PnL from change in bond value.
-    # `_rt` and `_rs` represent $r_T^{new}$ and $r_S^{new}$, respectively. To get `_rt_old` $= r_T^{old}$, we simply need to offset `_rt_new` by one week:
-    df[f'vnm_rt_old'] = df[f'vnm_rt_new'].shift(1)
-    df[f'usd/vnd_old'] = df[f'usd/vnd'].shift(1)
-    df.head(200).tail(5)
+        # Now, let's calculate PnL from change in bond value.
+        # `_rt` and `_rs` represent $r_T^{new}$ and $r_S^{new}$, respectively. To get `_rt_old` $= r_T^{old}$, we simply need to offset `_rt_new` by one week:
+        df[f'{country}_rt_old'] = df[f'{country}_rt_new'].shift(1)
+        df[f'usd/vnd_old'] = df[f'usd/vnd'].shift(1)
+        df.head(200).tail(5)
 
-    # Then it is straightforward to calculate bond returns:
-    T = 5
-    S = 4 + (51/52.)
-    df[f'vnm_val'] = (
-        # Change in bond price
-        (np.exp(-df[f'vnm_rs_new'] * S) / np.exp(-df[f'vnm_rt_old'] * T)) *
-        # Change in FX spot
-        (df[f'usd/vnd_old'] / df[f'usd/vnd'])
-    )
-    df.loc[df['lend_gt_fund'].astype(bool), 'vnm_val'] = 1.
-    df[f'vnm_pnl'] = (df['vnm_val'] * 1e7) - 1e7
+        # Then it is straightforward to calculate bond returns:
+        T = 5
+        S = 4 + (51/52.)
+        df[f'{country}_val'] = (
+            # Change in bond price
+            (np.exp(-df[f'{country}_rs_new'] * S) / np.exp(-df[f'{country}_rt_old'] * T)) *
+            # Change in FX spot
+            (df[f'usd/vnd_old'] / df[f'usd/vnd'])
+        )
+        df.loc[df['lend_gt_fund'].astype(bool), f'{country}_val'] = 1.
+        df[f'{country}_pnl'] = (df[f'{country}_val'] * 1e7) - 1e7
 
-    # These PnL values look way too high to be weekly; they look more like annualized PnL. I'm sure that I messed up my units somewhere and I'm actually calculating annualized returns per week, but I can't see where. For the sake of completing the analysis, I will simply assume that I calculated annualized returns, and therefore calculate my weekly return values by dividing % return by 52.
-    df[f'vnm_val_wk'] = 1 + ((df['vnm_val'] - 1.) / 52.)
-    df[f'vnm_pnl_wk'] = (df['vnm_val_wk'] * 1e7) - 1e7
-    df[f'vnm_pct'] = 100 * (df['vnm_pnl_wk'] / 2e6)
+        # These PnL values look way too high to be weekly; they look more like annualized PnL. I'm sure that I messed up my units somewhere and I'm actually calculating annualized returns per week, but I can't see where. For the sake of completing the analysis, I will simply assume that I calculated annualized returns, and therefore calculate my weekly return values by dividing % return by 52.
+        df[f'{country}_val_wk'] = 1 + ((df[f'{country}_val'] - 1.) / 52.)
+        df[f'{country}_pnl_wk'] = (df[f'{country}_val_wk'] * 1e7) - 1e7
+        df[f'{country}_pct'] = 100 * (df[f'{country}_pnl_wk'] / 2e6)
 
-    # Check that our effective bond val doesn't change for weeks where the lending rate is too low:
-    df.loc[df['lend_gt_fund'].astype(bool), 'vnm_val_wk']
+        # Check that our effective bond val doesn't change for weeks where the lending rate is too low:
+        df.loc[df['lend_gt_fund'].astype(bool), f'{country}_val_wk']
 
-    # Check that our total PnL and returns are reasonable for this 8 year period:
-    print(f"Total PnL over ~8 years: {df[f'vnm_pnl_wk'].sum():0.2f} = {100 * df[f'vnm_pnl_wk'].sum() / 2e6:0.0f}% of our $2MM weekly capital.")
+        # Check that our total PnL and returns are reasonable for this 8 year period:
+        print(f"Total PnL over ~8 years: {df[f'{country}_pnl_wk'].sum():0.2f} = {100 * df[f'{country}_pnl_wk'].sum() / 2e6:0.0f}% of our $2MM weekly capital.")
