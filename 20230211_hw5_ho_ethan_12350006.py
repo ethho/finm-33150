@@ -296,14 +296,19 @@ if __name__ == '__main__':
     assert not fx.isnull().any().any()
     assert not ois.isnull().any().any()
 
-    countries = ['VNM', 'THA', 'PAK', 'PHL']
+    countries = {
+        'VNM': 'VND',
+        'THA': 'THB',
+        'PAK': 'PKR',
+        'PHL': 'PHP',
+    }
     yc_dict = {
         country: (
             get_yc(f'YC/{country}', start_date=start_date, end_date=end_date, col_prefix=country.lower())
             .reindex(daily_idx)
             .fillna(method='ffill')
             .iloc[1:, :]
-        ) for country in countries
+        ) for country in countries.keys()
     }
     yc_daily = pd.concat(yc_dict.values(), axis=1)
     # vnm = yc_dict['VNM']
@@ -321,9 +326,9 @@ if __name__ == '__main__':
     # )
 
     country_df = dict()
-
     for country in zcb.keys():
         print(f"Processing DataFrame for {country=}")
+        curr_code = countries[country]
         df_daily = pd.DataFrame({
             'fund_rate': ois_daily['gbr_0.08y'] + 0.5,
             'usd/gbp': fx_daily['USD/GBP'],
@@ -376,7 +381,11 @@ if __name__ == '__main__':
         # These PnL values look way too high to be weekly; they look more like annualized PnL. I'm sure that I messed up my units somewhere and I'm actually calculating annualized returns per week, but I can't see where. For the sake of completing the analysis, I will simply assume that I calculated annualized returns, and therefore calculate my weekly return values by dividing % return by 52.
         df[f'{country}_val_wk'] = 1 + ((df[f'{country}_val'] - 1.) / 52.)
         df[f'{country}_pnl_wk'] = (df[f'{country}_val_wk'] * 1e7) - 1e7
-        df[f'{country}_pct'] = 100 * (df[f'{country}_pnl_wk'] / 2e6)
+        # df[f'{country}_pct'] = 100 * (df[f'{country}_pnl_wk'] / 2e6)
+
+        # Finally, calculate PnL including the OIS interest paid
+        df[f'tot_pnl'] = df[f'{country}_pnl_wk'] + df['fund_deficit']
+        df[f'tot_pct'] = 100 * (df['tot_pnl'] / 2e6)
 
         # Check that our effective bond val doesn't change for weeks where the lending rate is too low:
         df.loc[df['lend_gt_fund'].astype(bool), f'{country}_val_wk']
