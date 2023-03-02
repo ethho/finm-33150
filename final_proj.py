@@ -247,7 +247,7 @@ def zcb_from_spot(row, cpn_freq, spot_curve, **kw):
     return _zcb_from_spot(spot, tenor, cpn_freq, spot_curve)
 
 
-def pr_from_spot(row, cpn_freq, spot_curve, holding_period, **kw):
+def pr_from_spot(row, cpn_freq, zcb_curve, holding_period, **kw):
     """
     Calculate ZCB (discount) price from `row.spot` rate, given 1 / `cpn_freq`
     coupons are given per year.
@@ -256,15 +256,15 @@ def pr_from_spot(row, cpn_freq, spot_curve, holding_period, **kw):
     Zero_And_Spot_Curves.ipynb
     """
     tenor = row.name # in years
-    spot = row.spot
+    zcb = row.zcb
 
     # For example T = 5 years and S = 5 years - 1 month
     # Note that we can pass `holding_period` = 0 to get pr_t
     T = tenor
     S = T - holding_period
     return bond_price(
-        spot_curve,
-        coupon_rate=spot,
+        zcb_curve,
+        coupon_rate=zcb,
         tenor=S,
         coupon_freq=cpn_freq
     )
@@ -301,9 +301,15 @@ def get_zcb_curve_at_t(
     # Zero-coupon rate
     df['zcb'] = df.apply(zcb_from_spot, axis=1, **kw)
     # Zero-coupon bond price at maturity S = tenor - 1 month
-    df['pr_s'] = df.apply(pr_from_spot, axis=1, holding_period=holding_period, **kw)
+    df['pr_s'] = df.apply(
+        pr_from_spot, axis=1, holding_period=holding_period,
+        zcb_curve=df['zcb'].copy(), **kw
+    )
     # Zero-coupon bond price at maturity T = tenor - 0 months
-    df['pr_t'] = df.apply(pr_from_spot, axis=1, holding_period=0., **kw)
+    df['pr_t'] = df.apply(
+        pr_from_spot, axis=1, holding_period=0.,
+        zcb_curve=df['zcb'].copy(), **kw
+    )
     # Forward discount factor (F)
     df['fwd_factor'] = df.pr_t / df.pr_s
     # Forward discount rate (f)
@@ -414,14 +420,6 @@ def unstack_zcb_df(in_df):
     df = df.unstack().reorder_levels([1, 2, 0])
     return df
 
-def get_position_returns(df):
-    """
-    Calculate the return series for every possible hedged position every month.
-    Project Part 1B
-    """
-    # breakpoint()
-    pass
-
 def read_uszcb(
     zcb_out_fp='./data/uszcb.csv',
 ):
@@ -483,9 +481,6 @@ def main(
     df = zcb_all_countries['usa']
     df.to_csv(zcb_out_fp)
     print(f'Wrote US ZCB rates to {zcb_out_fp}')
-
-    # Part 1B: calculate position (PS) returns
-    ps_df = get_position_returns(df)
 
     return df
 
