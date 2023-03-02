@@ -167,14 +167,18 @@ def tenor_wk_to_years(wk: int) -> float:
     """
     Convert tenor in weeks to years.
     """
-    return wk * 7 / 364.
+    return wk / 52
+    # Equivalently,
+    # return wk * 7 / 364
 
 @functools.lru_cache()
 def tenor_years_to_wk(yr: float) -> float:
     """
     Convert tenor in years to weeks.
     """
-    return yr * 364. / 7.
+    return yr * 52
+    # Equivalently,
+    # return yr * 364 / 7
 
 
 def _zcb_from_spot(spot, tenor, cpn_freq, spot_curve):
@@ -226,18 +230,13 @@ def pr_from_spot(row, cpn_freq, spot_curve, holding_period, **kw):
     )
 
 
-def get_forward_rate(row, cpn_freq, spot_curve, holding_period, **kw):
-    """
-    Calculate 1-month forward rate.
-    """
-    tenor = row.name # in years
-    spot = row.spot
-
-    # Calculate the 1-month forward, zero-coupon rate
-    other_way = -math.log(pr_t / pr_s) / holding_period
-    breakpoint()
-
-def get_zcb_curve_at_t(spot_wk: pd.Series, coupons_per_year=2, holding_period=7/364.):
+def get_zcb_curve_at_t(
+    spot_wk: pd.Series,
+    coupons_per_year=2,
+    holding_period=28/364.,
+    # Equivalently,
+    # holding_period=4/52.,
+):
     """
     Given the spot rate `spot_wk` indexed by tenor (in weeks), calculate
     zero coupon rate, zero-coupon factor (price), and forward rate & factor.
@@ -274,7 +273,7 @@ def get_zcb_curve_at_t(spot_wk: pd.Series, coupons_per_year=2, holding_period=7/
     df.index = pd.Index([tenor_years_to_wk(tenor_yr) for tenor_yr in df.index])
     # Convert to a series with a MultiIndex
     ser = df.stack(dropna=False)
-    ser.index.set_names(['tenor_wk', 'metric'])
+    ser.index.set_names(['tenor_wk', 'metric'], inplace=True)
     return ser
 
 TENOR_WEEK_MAP = {
@@ -294,14 +293,34 @@ TENOR_WEEK_MAP = {
     (30, 'y'): 52 * 30,
 }
 
-def get_1mo_value(df: pd.DataFrame, **kw):
-    breakpoint()
+def get_4wk_value(df: pd.DataFrame, holding_period, **kw):
+    # Calculate tenor in years.
+    # There should only be one tenor in the input DataFrame `df`.
+    tenors_wk = df.index.get_level_values(level=0).unique()
+    assert len(tenors_wk), tenors_wk
+    tenor_wk = tenors_wk[0]
+    tenor = tenor_wk_to_years(tenor_wk)
 
-def calculate_from_spot(df_raw):
+    pr_s = df.loc[tenor_wk, 'pr_s']
+    # NOTE: this assumes that the freq == holding_period
+    pr_t_old= df.loc[tenor_wk, 'pr_t'].shift(1)#, freq='28D')
+    val = pr_s / pr_t_old
+    return val
+
+def calculate_from_spot(
+    df_raw,
+    holding_period=28/364.,
+    # Equivalently,
+    # holding_period=4/52.,
+):
+    """
+    TODO: review holding_period. Namely, 364/28 = 13.0 months. But our actual
+    holding_period = 4 weeks = 28 days.
+    """
     # Get groups by column prefix
     grps: Dict[List[Dict]] = get_col_groups(tuple(df_raw.columns.tolist()))
     zcb_dict = dict()
-    for cty, cols in grps.items():
+    for country, cols in grps.items():
         # Convert each tenor into units of weeks
         for item in cols:
             item['tenor_wk'] = TENOR_WEEK_MAP[(int(item['tenor']), item['unit'])]
@@ -309,39 +328,42 @@ def calculate_from_spot(df_raw):
             item['col']: item['tenor_wk']
             for item in cols
         })
+        # TODO:
+        # If U.S Treasury uses a different definition of "annualized rate",
+        # convert [their definition] into our definition, which is a 364-day
+        # year (7 days * 52 weeks = 364 days).
         zcb = (df / 100.).apply(get_zcb_curve_at_t, axis=1)
 
-        pr_ser = (
+        # TODO
+        # Check that TimeDelta between DatetimeIndex values equals
+        # holding_period
+
+        # Calculate value at each tenor, assuming that we
+        # bought the bond and held for `holding_period` before selling.
+        val_df = (
             zcb
             .stack(0, dropna=False)
             [['pr_s', 'pr_t']]
             .swaplevel()
             .sort_index()
             .groupby(level=0, group_keys=False)
-            .apply(get_1mo_value, axis=1)
+            .apply(get_4wk_value, axis=1, holding_period=holding_period)
+            .T
         )
-        breakpoint()
-        # zcb.stack(0, dropna=False)[['pr_s', 'pr_t']].swaplevel().sort_index().shift(1).loc[1560.].tail()
+        val_df.columns = pd.MultiIndex.from_tuples([
+            (tenor_wk, 'val') for tenor_wk in val_df.columns
+        ], names=['tenor_wk', 'metric'])
 
-        # Calculate value at each tenor, assuming that we
-        # bought the bond and held for `holding_period` before selling.
-        holding_period = 30/364.
-        rename_dict = dict()
-        for item in cols:
-            tenor_wk = item['tenor_wk']
-            tenor = tenor_wk_to_years(tenor_wk)
-            tenor_name = str(int(tenor_wk))
-            rename_dict[tenor_wk] = f"{tenor_name}_zcb"
-            T = tenor
-            S = tenor - holding_period
-            zcb[f'{tenor_name}_val'] = (
-                (np.exp(-zcb[f"{tenor_name}_rs"] * S) /
-                 np.exp(-zcb[f"{tenor_name}_rt"].shift(1) * T))
-            )
-            # zcb[f'{tenor_name}_ret'] = (zcb[f'{tenor_name}_val'] - zcb[f'{tenor_name}_val'].shift(1)) / zcb[f'{tenor_name}_val'].shift(1)
-        zcb.rename(columns=rename_dict, inplace=True)
-        zcb.index.name = 'date'
-        zcb_dict[cty] = zcb
+        # Merge 1-month value `val` into the DataFrame
+        zcb = zcb.merge(val_df, how='left', left_index=True, right_index=True)
+
+        # Final tweaks to indices
+        zcb.columns.set_names(['tenor_wk', 'metric'], inplace=True)
+        zcb.index.set_names(['date'], inplace=True)
+        zcb.sort_index(axis=0, inplace=True)
+        zcb.sort_index(axis=1, inplace=True)
+        assert (zcb.dtypes == np.float64).all(), f"some columns have dtype != np.float64"
+        zcb_dict[country] = zcb
     return zcb_dict
 
 def unstack_zcb_df(in_df):
@@ -358,21 +380,26 @@ def main(out_fp='./data/uszcb.csv'):
     start_date = '1990-01-01'
     end_date = '2022-12-16'
 
+    # Construct a DatetimeIndex containing dates to trade on.
+    # We choose to trade every 4 weeks, since this is the tenor of
+    # the 1-month T-bill that we will use for funding.
+    # We choose every 4th Wednesday to trade on.
     daily_idx = pd.date_range(start_date, end_date)
     first_wed = get_next_day_of_week(start_date, 2)
-    wed_idx_w_holidays = pd.date_range(first_wed, end_date, freq='7D')
+    wed_idx_w_holidays = pd.date_range(first_wed, end_date, freq='28D')
     assert all(date.day_of_week == 2 for date in wed_idx_w_holidays)
 
-    wed_idx = [
+    wed_idx = pd.to_datetime([
         date for date in wed_idx_w_holidays
-        if date not in pd.to_datetime([
-            # Remove Wednesdays that fall on holidays
-            '2012-12-26', '2013-12-25', '2014-01-01', '2018-12-26',
-            '2019-12-25', '2020-01-01',
-        ])
-    ]
-    assert len(wed_idx_w_holidays) > len(wed_idx)
+        # if date not in pd.to_datetime([
+        #     # Remove Wednesdays that fall on holidays
+        #     '2012-12-26', '2013-12-25', '2014-01-01', '2018-12-26',
+        #     '2019-12-25', '2020-01-01',
+        # ])
+    ])
+    # assert len(wed_idx_w_holidays) > len(wed_idx)
 
+    # Fetch Quandl yield curve (YC) data for each country
     countries = {
         'USA': 'USD',
     }
@@ -386,12 +413,10 @@ def main(out_fp='./data/uszcb.csv'):
     }
     yc_daily = pd.concat(yc_dict.values(), axis=1)
     yc_monthly = yc_daily.loc[wed_idx].copy()
-    # TODO
-    # yc_monthly = yc_monthly.loc['2001-01-01':]
     zcb = calculate_from_spot(yc_monthly)
-    uszcb = zcb['usa']
+    us = zcb['usa']
     # df = unstack_zcb_df(uszcb)
-    uszcb.to_csv(out_fp)
+    us.to_csv(out_fp)
     print(f'Wrote US ZCB rates to {out_fp}')
 
 if __name__ == '__main__':
