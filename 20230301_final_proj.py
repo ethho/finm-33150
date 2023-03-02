@@ -15,6 +15,23 @@ import plotly.express as px
 from memoize.dataframe import memoize_df
 from lmfit.models import SkewedGaussianModel
 
+TENOR_WEEK_MAP = {
+    (1, 'm'): 4,
+    (2, 'm'): 8,
+    (3, 'm'): 13,
+    (4, 'm'): 17,
+    (6, 'm'): 26,
+    (12, 'm'): 52,
+    (1, 'y'): 52,
+    (2, 'y'): 52 * 2,
+    (3, 'y'): 52 * 3,
+    (5, 'y'): 52 * 5,
+    (7, 'y'): 52 * 7,
+    (10, 'y'): 52 * 10,
+    (20, 'y'): 52 * 20,
+    (30, 'y'): 52 * 30,
+}
+
 def get_secrets(fp='./secrets.json'):
     """
     Reads secret values such as API keys from a JSON-formatted file at `fp`.
@@ -133,7 +150,7 @@ def get_yc(*args, col_prefix='', **kw):
 @functools.lru_cache()
 def get_col_groups(cols) -> Dict:
     """
-    get_col_groups(tuple(yc_daily.columns.tolist()))
+    Usage: get_col_groups(tuple(yc_daily.columns.tolist()))
     """
     out = dict()
     for col in cols:
@@ -152,7 +169,7 @@ def get_col_groups(cols) -> Dict:
 
 def bond_price(zcb, coupon_rate, tenor, coupon_freq):
     """
-    Adapted from Zero_And_Spot_Curves.ipynb
+    Copied from Zero_And_Spot_Curves.ipynb
     """
     times = np.arange(tenor, 0, step=-coupon_freq)[::-1]
     if times.shape[0] == 0:
@@ -165,7 +182,7 @@ def bond_price(zcb, coupon_rate, tenor, coupon_freq):
 @functools.lru_cache()
 def tenor_wk_to_years(wk: int) -> float:
     """
-    Convert tenor in weeks to years.
+    Convert tenor from weeks to years.
     """
     return wk / 52
     # Equivalently,
@@ -174,7 +191,7 @@ def tenor_wk_to_years(wk: int) -> float:
 @functools.lru_cache()
 def tenor_years_to_wk(yr: float) -> float:
     """
-    Convert tenor in years to weeks.
+    Convert tenor from years to weeks.
     """
     return yr * 52
     # Equivalently,
@@ -276,23 +293,6 @@ def get_zcb_curve_at_t(
     ser.index.set_names(['tenor_wk', 'metric'], inplace=True)
     return ser
 
-TENOR_WEEK_MAP = {
-    (1, 'm'): 4,
-    (2, 'm'): 8,
-    (3, 'm'): 13,
-    (4, 'm'): 17,
-    (6, 'm'): 26,
-    (12, 'm'): 52,
-    (1, 'y'): 52,
-    (2, 'y'): 52 * 2,
-    (3, 'y'): 52 * 3,
-    (5, 'y'): 52 * 5,
-    (7, 'y'): 52 * 7,
-    (10, 'y'): 52 * 10,
-    (20, 'y'): 52 * 20,
-    (30, 'y'): 52 * 30,
-}
-
 def get_4wk_value(df: pd.DataFrame, holding_period, **kw):
     # Calculate tenor in years.
     # There should only be one tenor in the input DataFrame `df`.
@@ -312,9 +312,13 @@ def calculate_from_spot(
     holding_period=28/364.,
     # Equivalently,
     # holding_period=4/52.,
-):
+) -> pd.DataFrame:
     """
-    TODO: review holding_period. Namely, 364/28 = 13.0 months. But our actual
+    Calculate zero-coupon metrics (rate, factor, forward rate, etc.)
+    given `df_raw`, which contains annualized spot rates in percent.
+
+    TODO
+    Review holding_period. Namely, 364/28 = 13.0 trades/year. But our actual
     holding_period = 4 weeks = 28 days.
     """
     # Get groups by column prefix
@@ -328,10 +332,12 @@ def calculate_from_spot(
             item['col']: item['tenor_wk']
             for item in cols
         })
+
         # TODO:
         # If U.S Treasury uses a different definition of "annualized rate",
         # convert [their definition] into our definition, which is a 364-day
         # year (7 days * 52 weeks = 364 days).
+
         zcb = (df / 100.).apply(get_zcb_curve_at_t, axis=1)
 
         # TODO
@@ -413,11 +419,11 @@ def main(out_fp='./data/uszcb.csv'):
     }
     yc_daily = pd.concat(yc_dict.values(), axis=1)
     yc_monthly = yc_daily.loc[wed_idx].copy()
-    zcb = calculate_from_spot(yc_monthly)
-    us = zcb['usa']
-    # df = unstack_zcb_df(uszcb)
-    us.to_csv(out_fp)
+    zcb_all_countries = calculate_from_spot(yc_monthly)
+    df = zcb_all_countries['usa']
+    df.to_csv(out_fp)
     print(f'Wrote US ZCB rates to {out_fp}')
+    return df
 
 if __name__ == '__main__':
     main(*sys.argv[1:])
