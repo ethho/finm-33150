@@ -46,13 +46,13 @@ TENOR_WEEK_MAP = {
     (6, 'm'): 26,
     (12, 'm'): 52,
     (1, 'y'): 52,
-    (2, 'y'): 52 * 2,
-    (3, 'y'): 52 * 3,
-    (5, 'y'): 52 * 5,
-    (7, 'y'): 52 * 7,
-    (10, 'y'): 52 * 10,
-    (20, 'y'): 52 * 20,
-    (30, 'y'): 52 * 30,
+    (2, 'y'): 52 * 2, # 104
+    (3, 'y'): 52 * 3, # 156
+    (5, 'y'): 52 * 5, # 260
+    (7, 'y'): 52 * 7, # 364
+    (10, 'y'): 52 * 10, # 520
+    (20, 'y'): 52 * 20, # 1040
+    (30, 'y'): 52 * 30, # 1560
 }
 
 def get_secrets(fp='./secrets.json'):
@@ -366,9 +366,10 @@ def calculate_from_spot(
         # Compute ZCB rates, factors, and forward rate & factor at each time t
         zcb = (df / 100.).apply(get_zcb_curve_at_t, axis=1)
 
-        # TODO
-        # Check that TimeDelta between DatetimeIndex values equals
-        # holding_period
+        # Double-check that TimeDelta between DatetimeIndex values equals
+        # holding_period = 28 days
+        idx_timedelta = pd.Series(zcb.index.values - np.roll(zcb.index.values, shift=1)).iloc[1:]
+        assert pd.to_timedelta(idx_timedelta.unique()[0]).days == 28, idx_timedelta.unique()
 
         # Calculate value at each tenor, assuming that we
         # bought the bond and held for `holding_period` before selling.
