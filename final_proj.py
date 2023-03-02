@@ -396,6 +396,11 @@ def calculate_from_spot(
         zcb.sort_index(axis=0, inplace=True)
         zcb.sort_index(axis=1, inplace=True)
         assert (zcb.dtypes == np.float64).all(), f"some columns have dtype != np.float64"
+
+        # Replace non-sensical values with NaN
+        # For example, the 1-month forward rate of 1-month T-bills
+        zcb.loc[:, (4.0, 'fwd')] = float('nan')
+
         zcb_dict[country] = zcb
     return zcb_dict
 
@@ -414,7 +419,8 @@ def get_position_returns(df):
     Calculate the return series for every possible hedged position every month.
     Project Part 1B
     """
-    breakpoint()
+    # breakpoint()
+    pass
 
 def read_uszcb(
     zcb_out_fp='./data/uszcb.csv',
