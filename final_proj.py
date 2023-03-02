@@ -21,8 +21,22 @@ import numpy as np
 from scipy.stats import norm, probplot
 import quandl
 import plotly.express as px
-from memoize.dataframe import memoize_df
-from lmfit.models import SkewedGaussianModel
+try:
+    from memoize.dataframe import memoize_df
+except ImportError as err:
+    print(str(err))
+    raise Exception(
+        f"Missing dependency memoize. Please install using pip:\n\n"
+        f"pip install git+https://github.com/ethho/memoize.git"
+    )
+try:
+    from lmfit.models import SkewedGaussianModel
+except ImportError as err:
+    print(str(err))
+    raise Exception(
+        f"Missing dependency memoize. Please install using pip:\n\n"
+        f"pip install lmfit"
+    )
 
 TENOR_WEEK_MAP = {
     (1, 'm'): 4,
