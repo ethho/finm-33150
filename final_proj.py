@@ -356,11 +356,14 @@ def calculate_from_spot(
             for item in cols
         })
 
-        # TODO:
-        # If U.S Treasury uses a different definition of "annualized rate",
-        # convert [their definition] into our definition, which is a 364-day
-        # year (7 days * 52 weeks = 364 days).
+        # Since U.S Treasury uses a 365-366 day/year definition for
+        # calculating "annualized rate",
+        # (see https://home.treasury.gov/policy-issues/financing-the-government/interest-rate-statistics/interest-rates-frequently-asked-questions)
+        # convert rates into our definition, which is a 364-day
+        # year (7 days * 52.0 weeks = 364 days).
+        df *= 364 / 365.2
 
+        # Compute ZCB rates, factors, and forward rate & factor at each time t
         zcb = (df / 100.).apply(get_zcb_curve_at_t, axis=1)
 
         # TODO
