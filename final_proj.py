@@ -409,7 +409,34 @@ def unstack_zcb_df(in_df):
     df = df.unstack().reorder_levels([1, 2, 0])
     return df
 
-def main(out_fp='./data/uszcb.csv'):
+def get_position_returns(df):
+    """
+    Calculate the return series for every possible hedged position every month.
+    Project Part 1B
+    """
+    breakpoint()
+
+def read_uszcb(
+    zcb_out_fp='./data/uszcb.csv',
+):
+    """
+    Example of how to load DataFrame from uszcb.csv.
+    """
+    df = pd.read_csv(
+        zcb_out_fp,
+        header=[0, 1],
+        index_col=0,
+        parse_dates=[0],
+        dtype=float
+    )
+    df.columns = pd.MultiIndex.from_tuples([
+        (int(float(tenor)), str(metric)) for tenor, metric in df.columns]
+    )
+    return df
+
+def main(
+    zcb_out_fp='./data/uszcb.csv',
+):
     start_date = '1990-01-01'
     end_date = '2022-12-16'
 
@@ -448,9 +475,14 @@ def main(out_fp='./data/uszcb.csv'):
     yc_monthly = yc_daily.loc[wed_idx].copy()
     zcb_all_countries = calculate_from_spot(yc_monthly)
     df = zcb_all_countries['usa']
-    df.to_csv(out_fp)
-    print(f'Wrote US ZCB rates to {out_fp}')
+    df.to_csv(zcb_out_fp)
+    print(f'Wrote US ZCB rates to {zcb_out_fp}')
+
+    # Part 1B: calculate position (PS) returns
+    ps_df = get_position_returns(df)
+
     return df
+
 
 if __name__ == '__main__':
     main(*sys.argv[1:])
