@@ -256,7 +256,7 @@ def pr_from_spot(row, cpn_freq, zcb_curve, holding_period, **kw):
     Zero_And_Spot_Curves.ipynb
     """
     tenor = row.name # in years
-    zcb = row.zcb
+    spot = row.spot
 
     # For example T = 5 years and S = 5 years - 1 month
     # Note that we can pass `holding_period` = 0 to get pr_t
@@ -264,7 +264,7 @@ def pr_from_spot(row, cpn_freq, zcb_curve, holding_period, **kw):
     S = T - holding_period
     return bond_price(
         zcb_curve,
-        coupon_rate=zcb,
+        coupon_rate=spot,
         tenor=S,
         coupon_freq=cpn_freq
     )
