@@ -1,4 +1,13 @@
 #!/usr/bin/env python
+"""
+Author: Ethan Ho
+Date: 3/2/2023
+License: MIT
+Usage:
+
+python3 final_proj.py
+# or from Python3: from final_proj import main as final_proj_main
+"""
 
 import os
 import re
