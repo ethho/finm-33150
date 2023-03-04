@@ -200,6 +200,7 @@ def bond_price(zcb, coupon_rate, tenor, coupon_freq):
     else:
         r = np.interp(times, zcb.index.values, zcb.values) # Linear interpolation
         p = np.exp(-tenor*r[-1]) + coupon_freq * coupon_rate * np.exp(-r*times).sum()
+        # Any coupon bond can be written as the sum of zero coupon bonds
     return p
 
 @functools.lru_cache()
@@ -262,12 +263,17 @@ def pr_from_spot(row, cpn_freq, zcb_curve, holding_period, **kw):
     # Note that we can pass `holding_period` = 0 to get pr_t
     T = tenor
     S = T - holding_period
-    return bond_price(
+    pr = bond_price(
         zcb_curve,
-        coupon_rate=spot,
+        # We remove the coupon interest term by setting
+        # coupon_freq = 0 iff tenor <=1 (T-bills).
+        coupon_rate=spot if tenor > 1. else 0,
         tenor=S,
         coupon_freq=cpn_freq
     )
+    # if T == S and not pd.isnull(spot):
+    #     breakpoint()
+    return pr
 
 
 def get_zcb_curve_at_t(
@@ -300,16 +306,11 @@ def get_zcb_curve_at_t(
 
     # Zero-coupon rate
     df['zcb'] = df.apply(zcb_from_spot, axis=1, **kw)
+    kw['zcb_curve'] = df['zcb'].copy(deep=True)
     # Zero-coupon bond price at maturity S = tenor - 1 month
-    df['pr_s'] = df.apply(
-        pr_from_spot, axis=1, holding_period=holding_period,
-        zcb_curve=df['zcb'].copy(), **kw
-    )
+    df['pr_s'] = df.apply(pr_from_spot, axis=1, holding_period=holding_period, **kw)
     # Zero-coupon bond price at maturity T = tenor - 0 months
-    df['pr_t'] = df.apply(
-        pr_from_spot, axis=1, holding_period=0.,
-        zcb_curve=df['zcb'].copy(), **kw
-    )
+    df['pr_t'] = df.apply(pr_from_spot, axis=1, holding_period=0., **kw)
     # Forward discount factor (F)
     df['fwd_factor'] = df.pr_t / df.pr_s
     # Forward discount rate (f)
@@ -477,6 +478,7 @@ def main(
     }
     yc_daily = pd.concat(yc_dict.values(), axis=1)
     yc_monthly = yc_daily.loc[wed_idx].copy()
+    # yc_monthly = yc_monthly.loc['2001-01-01':].copy() # DEBUG
     zcb_all_countries = calculate_from_spot(yc_monthly)
     df = zcb_all_countries['usa']
     df.to_csv(zcb_out_fp)
