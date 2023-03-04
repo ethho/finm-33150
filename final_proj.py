@@ -438,7 +438,7 @@ def read_uszcb(
     return df
 
 def main(
-    zcb_out_fp='./data/uszcb.csv',
+    zcb_out_fp='./data/final_proj/uszcb.csv',
 ):
     start_date = '1990-01-01'
     end_date = '2022-12-16'

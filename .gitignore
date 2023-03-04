@@ -160,6 +160,7 @@ cython_debug/
 #.idea/
 
 secrets.json
-data
 !tests/data/
 zip
+data/*
+!data/final_proj/

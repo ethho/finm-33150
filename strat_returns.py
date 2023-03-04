@@ -68,7 +68,9 @@ def strat_1a_returns(
     tenors: List[float],
     is_long: bool = True,
     broker_borrow_rate: float = 50,
-    traded_cash: float = 10_000_000, leverage: float = 5.,
+    capital: float = 10_000_000,
+    leverage: float = 5.,
+    start_date: str = None,
 ):
     """
     Given bond values `val`, calculate returns assuming duration and cash-weighted
@@ -77,6 +79,13 @@ def strat_1a_returns(
     val = zcb.stack(1).swaplevel().loc['val'][[4.] + tenors]
     long_mult = 1 if is_long else -1
     assert 4. in val.columns, f"please include a 4-week rate in `val`"
+
+    # Trim data to start on first non-null
+    if start_date is None:
+        last_non_null = val[val.isnull().any(axis=1)].iloc[-1].name
+        start_date = val.loc['2001-08-01':].iloc[1].name.strftime('%Y-%m-%d')
+        print(f"Using first non-null date as {start_date=}")
+    val = val.loc[start_date:].copy(deep=True)
 
     # Calculate the hedge factors for each position as described in Chua et al 2005.
     hedge_factors = long_mult * pd.Series({
@@ -88,7 +97,7 @@ def strat_1a_returns(
     hedge_factors[4] = -hedge_factors[[col for col in hedge_factors.index if col != 4]].sum()
 
     # Normalize the hedge_factors, so that the sum of hedge factors for
-    # our long leg equals `traded_cash`. For example, our normalized hedge factors
+    # our long leg equals `capital`. For example, our normalized hedge factors
     # would look like:
     #  tenor   factor
     # 4     -1.000000
@@ -96,13 +105,8 @@ def strat_1a_returns(
     # 156    0.210066
     # 260    0.124726
     hedge_factors *= 1 / hedge_factors[hedge_factors > 0].sum()
-    notional_val = hedge_factors * traded_cash
+    notional_val = hedge_factors * capital
     assert abs(hedge_factors.sum()) < 1e-8, f"not cash-neutral: {hedge_factors=}"
-
-    # Our bond value for the 4-week T-bill is always < 1.
-    # Convert it to the reciprocal so that we can multiply hedge_factors
-    # to get PnL.
-    val[4.] = 1 / val[4.]
 
     # Rate of return in annualized basis points
     return_rate_no_fees = 1e4 * (val - 1)
@@ -121,10 +125,10 @@ def strat_1a_returns(
     tx_cost_tot = tx_cost_port.sum()
 
     # We also assume an additional broker-imposed `broker_borrow_rate` (50 bp by default)
-    # on any cash borrowed on leverage (4/5 of `traded_cash` by default).
+    # on any cash borrowed on leverage (4/5 of `capital` by default).
     # Since we normalized our hedge ratios, this fee is simply 50 bp
-    # on our `traded_cash`.
-    borrow_fee = -(broker_borrow_rate / (1e4 * 13.)) * (traded_cash * (leverage - 1) / leverage)
+    # on our `capital`.
+    borrow_fee = -(broker_borrow_rate / (1e4 * 13.)) * (capital * (leverage - 1) / leverage)
 
     # We can now calculate PnL including fees:
     pnl_port_w_tx_cost = pnl_port_no_fees + tx_cost_port
@@ -136,7 +140,11 @@ def strat_1a_returns(
         'pnl_tot': pnl_tot,
     }
 
-def get_pnl_1A_135(zcb, signal: pd.DataFrame):
+def get_pnl_1A_135(
+    zcb, signal: pd.DataFrame,
+    capital: float = 10_000_000,
+    leverage: float = 5.,
+):
     """
     Calculate the return series for Strategy 1-A given a `signal`.
     """
@@ -147,7 +155,9 @@ def get_pnl_1A_135(zcb, signal: pd.DataFrame):
     long_results = strat_1a_returns(
         zcb,
         tenors=[52., 156., 260.],
-        is_long=True
+        capital=capital,
+        leverage=leverage,
+        is_long=True,
     )
 
     # Strategy pt1A_135s: portfolio returns for short position on Strategy 1-A
@@ -155,14 +165,16 @@ def get_pnl_1A_135(zcb, signal: pd.DataFrame):
     short_results = strat_1a_returns(
         zcb,
         tenors=[52., 156., 260.],
-        is_long=False
+        capital=capital,
+        leverage=leverage,
+        is_long=False,
     )
 
     # Choose long, short, or flat depending on `signal`
     pnl = pd.DataFrame({
         1:  long_results['pnl_tot'],
         -1: short_results['pnl_tot'],
-        0: 0.,
+        0: 0,
         'signal': signal['signal'],
         'pnl': float('nan'),
     }, index=short_results['pnl_tot'].index)
@@ -170,13 +182,16 @@ def get_pnl_1A_135(zcb, signal: pd.DataFrame):
         lambda row: row.loc[row.signal],
         axis=1
     )
+    pnl['pnl_pct'] = 100 * pnl['pnl'] / (capital / leverage)
+    pnl['long_pnl_pct'] = 100 * pnl[1] / (capital / leverage)
+    pnl['short_pnl_pct'] = 100 * pnl[-1] / (capital / leverage)
 
     return pnl
 
 def get_signal_n1A_135(
     zcb: pd.DataFrame,
     tenors=[52., 156., 260.],
-    sigma_thresh=1.,
+    sigma_thresh=0.8,
     window_size=102,
 ) -> pd.Series:
     """
@@ -188,20 +203,25 @@ def get_signal_n1A_135(
     deviations from the mean, where mean and STD are calculated
     over the last `window_size` 4-week periods.
     """
-    fwd = zcb.stack(1).swaplevel().loc['fwd'][tenors]
+    # Here, we shift the signal by one period (4 weeks)
+    # to avoid lookahead bias, so that the date index represents t,
+    # the time when we're selling the position that we decided on a month ago.
+    # This is consistent with our date indexing for portfolio returns data:
+    # that date represents the day we _closed_ our 4-week long position.
+    fwd = zcb.stack(1).swaplevel().loc['fwd'][tenors].shift(1)
     fwd_mean = fwd.mean(axis=1)
     df = fwd_mean.rolling(window=window_size).agg(['mean', 'std'])
     df['low_thresh']  = df['mean'] - df['std'] * sigma_thresh
     df['high_thresh'] = df['mean'] + df['std'] * sigma_thresh
     df['fwd'] = fwd_mean
     df['signal'] = 0
-    df.loc[df['fwd'] >= df['high_thresh'], 'signal'] = 1
-    df.loc[df['fwd'] <= df['low_thresh'], 'signal'] = -1
+    df.loc[df['fwd'] >= df['high_thresh'], 'signal'] = -1
+    df.loc[df['fwd'] <= df['low_thresh'], 'signal']  = 1
     return df
 
 def main(
-    zcb_fp='./data/uszcb.csv',
-    strat_results_out_fp='./data/strat_n1A_135.csv',
+    zcb_fp='./data/final_proj/uszcb.csv',
+    strat_results_out_fp='./data/final_proj/strat_n1A_135.csv',
 ):
     zcb = read_uszcb(zcb_fp)
     naive_signal = get_signal_n1A_135(
@@ -213,7 +233,7 @@ def main(
     strat_results = get_pnl_1A_135(zcb, signal=naive_signal)
     strat_results.to_csv(strat_results_out_fp)
     print(f"Wrote strategy returns to {strat_results_out_fp}")
-    return strat_results['pnl_tot']
+    return strat_results['pnl']
 
 
 if __name__ == '__main__':
