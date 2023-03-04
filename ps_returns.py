@@ -136,14 +136,13 @@ def strat_1a_returns(
         'pnl_tot': pnl_tot,
     }
 
-def get_position_returns(zcb):
+def get_pnl_1A_135(zcb, signal: pd.DataFrame):
     """
-    Calculate the return series for every possible hedged position every month.
+    Calculate the return series for Strategy 1-A.
 
     Project Part 1B: Calculate returns of all possible positions (PS) every month.
     Calculate return series for all possible positions that we can take.
-    E.g. for Strategy 2A, calculate the return series as a proportion of
-    unleveraged notional for every possible position:
+    E.g. for Strategy 2A, calculate the PnL for every possible portfolio:
 
     Short 52-week, buy 104-week
     Buy 52-week, short 104-week
@@ -153,28 +152,77 @@ def get_position_returns(zcb):
     Short 156-week, buy 1560-week
     Buy 156-week, short 1560-week
     """
-    notional = 10_000_000
-    k = notional
-    four_wk_rate = zcb.loc[:, (4., 'zcb')] * 4 / 52
-    four_wk_interest_paid = lambda prop: ((1 + four_wk_rate) * notional * prop) - notional
-    val = zcb.stack(1).swaplevel().loc['val']
-    spot_4wk = zcb.stack(1).swaplevel().loc['spot', 4.]
+    assert 'signal' in signal.columns
 
-    # Strategy n1A_135
-    # int_paid = zcb.stack(1).swaplevel().loc['spot', 4.]
-    # int_paid2 = (1 / zcb.stack(1).swaplevel().loc['val', 4.]) - 1
-    # breakpoint()
-    df = strat_1a_returns(
+    # Strategy pt1A_135l: portfolio returns for long position on Strategy 1-A
+    # portfolio using 1, 3, 5 year maturities
+    long_results = strat_1a_returns(
         zcb,
         tenors=[52., 156., 260.],
+        is_long=True
     )
+
+    # Strategy pt1A_135s: portfolio returns for short position on Strategy 1-A
+    # portfolio using 1, 3, 5 year maturities
+    short_results = strat_1a_returns(
+        zcb,
+        tenors=[52., 156., 260.],
+        is_long=False
+    )
+
+    # Choose long, short, or flat depending on `signal`
+    pnl = pd.DataFrame({
+        1:  long_results['pnl_tot'],
+        -1: short_results['pnl_tot'],
+        0: 0.,
+        'signal': signal['signal'],
+        'pnl': float('nan'),
+    }, index=short_results['pnl_tot'].index)
+    pnl['pnl'] = pnl.apply(
+        lambda row: row.loc[row.signal],
+        axis=1
+    )
+
+    return pnl
+
+def get_signal_n1A_135(
+    zcb: pd.DataFrame,
+    tenors=[52., 156., 260.],
+    sigma_thresh=1.,
+    window_size=102,
+) -> pd.Series:
+    """
+    Generate the trading signal for naive Strategy 1-A. The trading signal
+    will be 1 if we should take a long position on the Strategy 1-A portfolio,
+    0 if we should be flat, and -1 if we should short. A non-zero signal
+    is emitted if the mean of the 4-week forward rate curve across all
+    maturities is >= `sigma_thresh` (<= -`sigma_thresh` for short) standard
+    deviations from the mean, where mean and STD are calculated
+    over the last `window_size` 4-week periods.
+    """
+    fwd = zcb.stack(1).swaplevel().loc['fwd'][tenors]
+    fwd_mean = fwd.mean(axis=1)
+    df = fwd_mean.rolling(window=window_size).agg(['mean', 'std'])
+    df['low_thresh']  = df['mean'] - df['std'] * sigma_thresh
+    df['high_thresh'] = df['mean'] + df['std'] * sigma_thresh
+    df['fwd'] = fwd_mean
+    df['signal'] = 0
+    df.loc[df['fwd'] >= df['high_thresh'], 'signal'] = 1
+    df.loc[df['fwd'] <= df['low_thresh'], 'signal'] = -1
     return df
 
 def main(
     zcb_out_fp='./data/uszcb.csv',
 ):
     zcb = read_uszcb(zcb_out_fp)
-    ps_returns = get_position_returns(zcb)
+    naive_signal = get_signal_n1A_135(
+        zcb,
+        tenors=[52., 156., 260.],
+        sigma_thresh=1.,
+        window_size=102,
+    )
+    ps_results = get_pnl_1A_135(zcb, signal=naive_signal)
+    return ps_results['pnl_tot']
 
 
 if __name__ == '__main__':
