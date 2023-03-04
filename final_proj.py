@@ -203,7 +203,6 @@ def bond_price(zcb, coupon_rate, tenor, coupon_freq):
         # Any coupon bond can be written as the sum of zero coupon bonds
     return p
 
-@functools.lru_cache()
 def tenor_wk_to_years(wk: int) -> float:
     """
     Convert tenor from weeks to years.
@@ -212,7 +211,6 @@ def tenor_wk_to_years(wk: int) -> float:
     # Equivalently,
     # return wk * 7 / 364
 
-@functools.lru_cache()
 def tenor_years_to_wk(yr: float) -> float:
     """
     Convert tenor from years to weeks.
