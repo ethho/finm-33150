@@ -5,8 +5,8 @@ Date: 3/2/2023
 License: MIT
 Usage:
 
-python3 ps_returns.py
-# or from Python3: from ps_returns import main as ps_returns_main
+python3 strat_returns.py
+# or from Python3: from strat_returns import main as strat_returns_main
 """
 
 import os
@@ -108,17 +108,17 @@ def strat_1a_returns(
     return_rate_no_fees = 1e4 * (val - 1)
 
     # If we had no borrow or tx fees, PnL is a straightforward calculation:
-    pnl_pos_no_fees = return_rate_no_fees * notional_val / 1e4
-    pnl_tot_no_fees = pnl_pos_no_fees.sum(axis=1)
+    pnl_port_no_fees = return_rate_no_fees * notional_val / 1e4
+    pnl_tot_no_fees = pnl_port_no_fees.sum(axis=1)
 
     # ...but we need to add a tx fee to each trade.
     # Add a 0.5 bp transaction fee for every position, as described in
     # Chua 2005 Eq. 4.
-    tx_cost_pos = -pd.Series(
+    tx_cost_port = -pd.Series(
         0.00005 * tenor_wk_to_years(notional_val.index.values) * notional_val.values,
         index=notional_val.index,
     ).abs()
-    tx_cost_tot = tx_cost_pos.sum()
+    tx_cost_tot = tx_cost_port.sum()
 
     # We also assume an additional broker-imposed `broker_borrow_rate` (50 bp by default)
     # on any cash borrowed on leverage (4/5 of `traded_cash` by default).
@@ -127,8 +127,8 @@ def strat_1a_returns(
     borrow_fee = -(broker_borrow_rate / (1e4 * 13.)) * (traded_cash * (leverage - 1) / leverage)
 
     # We can now calculate PnL including fees:
-    pnl_pos_w_tx_cost = pnl_pos_no_fees + tx_cost_pos
-    pnl_tot = pnl_pos_w_tx_cost.sum(axis=1) + borrow_fee
+    pnl_port_w_tx_cost = pnl_port_no_fees + tx_cost_port
+    pnl_tot = pnl_port_w_tx_cost.sum(axis=1) + borrow_fee
 
     return {
         'hedge_factors': hedge_factors,
@@ -138,19 +138,7 @@ def strat_1a_returns(
 
 def get_pnl_1A_135(zcb, signal: pd.DataFrame):
     """
-    Calculate the return series for Strategy 1-A.
-
-    Project Part 1B: Calculate returns of all possible positions (PS) every month.
-    Calculate return series for all possible positions that we can take.
-    E.g. for Strategy 2A, calculate the PnL for every possible portfolio:
-
-    Short 52-week, buy 104-week
-    Buy 52-week, short 104-week
-    Short 52-week, buy 156-week
-    Buy 52-week, short 156-week
-    ...
-    Short 156-week, buy 1560-week
-    Buy 156-week, short 1560-week
+    Calculate the return series for Strategy 1-A given a `signal`.
     """
     assert 'signal' in signal.columns
 
@@ -212,17 +200,20 @@ def get_signal_n1A_135(
     return df
 
 def main(
-    zcb_out_fp='./data/uszcb.csv',
+    zcb_fp='./data/uszcb.csv',
+    strat_results_out_fp='./data/strat_n1A_135.csv',
 ):
-    zcb = read_uszcb(zcb_out_fp)
+    zcb = read_uszcb(zcb_fp)
     naive_signal = get_signal_n1A_135(
         zcb,
         tenors=[52., 156., 260.],
         sigma_thresh=1.,
         window_size=102,
     )
-    ps_results = get_pnl_1A_135(zcb, signal=naive_signal)
-    return ps_results['pnl_tot']
+    strat_results = get_pnl_1A_135(zcb, signal=naive_signal)
+    strat_results.to_csv(strat_results_out_fp)
+    print(f"Wrote strategy returns to {strat_results_out_fp}")
+    return strat_results['pnl_tot']
 
 
 if __name__ == '__main__':
