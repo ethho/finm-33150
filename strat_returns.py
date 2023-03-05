@@ -460,8 +460,8 @@ def main(
         window_size=102,
         file_stub='./data/final_proj/strat_n2A_220',
     )
-    strat_n2A_0510.get_pnl()
-    strat_n2A_0510.write_all()
+    strat_n2A_220.get_pnl()
+    strat_n2A_220.write_all()
 
     # Strategy naive 3-A 135
     strat_n3A_135= Strat3A(
