@@ -255,11 +255,82 @@ class Strat1A(StrategyBase):
         df.loc[df['fwd'] <= df['low_thresh'], 'signal']  = 1
         return df
 
+class Strat2A(StrategyBase):
+    """
+    Adapted from Strategy 2-A in Chua et al 2005.
+    """
+
+    def __init__(
+        self,
+        *args,
+        sigma_thresh=0.8,
+        window_size=102,
+        **kw,
+    ):
+        super(Strat2A, self).__init__(*args, **kw)
+        self.sigma_thresh = sigma_thresh
+        self.window_size = window_size
+        assert len(self.tenors) == 2, self.tenors
+        assert self.tenors[0] < self.tenors[1], self.tenors
+
+    def get_hedge_factors(self, val, long_mult):
+        """
+        Assuming duration and cash-weighted
+        positions for Strategy 2-A as described in Chua et al 2005.
+        """
+        # Calculate the hedge factors for each position as described in Chua et al 2005.
+        hedge_factors = pd.Series({
+            tenor_wk: k_div_x1(tenor_wk)
+            for tenor_wk in val.columns
+        })
+
+        if long_mult == 1:
+            hedge_factors.loc[self.tenors[0]] *= -1
+        elif long_mult == -1:
+            hedge_factors.loc[self.tenors[1]] *= -1
+        else:
+            raise NotImplementedError(f'Invalid {long_mult=}')
+
+        # Borrow (deposit) remaining cash at the 4-week rate
+        # to ensure cash neutrality.
+        hedge_factors[4] = -hedge_factors[[col for col in hedge_factors.index if col != 4]].sum()
+        self.hedge_factors_raw = hedge_factors
+        return self.hedge_factors_raw
+
+    def get_signal(self) -> pd.Series:
+        """
+        Generate the trading signal for naive Strategy 2-A. The trading signal
+        will be 1 if we should take a long position on the 2-A portfolio,
+        0 if we should be flat, and -1 if we should short. A non-zero signal
+        is emitted if the slope of the 4-week forward rate curve
+        (spread between low maturity rate and high maturity)
+        is >= `sigma_thresh` (<= -`sigma_thresh` for short) standard
+        deviations from the mean historical slope, where mean and STD
+        are calculated over the last `window_size` 4-week periods.
+        """
+        # Here, we shift the signal by one period (4 weeks)
+        # to avoid lookahead bias, so that the date index represents t,
+        # the time when we're selling the position that we decided on a month ago.
+        # This is consistent with our date indexing for portfolio returns data:
+        # that date represents the day we _closed_ our 4-week long position.
+        fwd = self.zcb.stack(1).swaplevel().loc['fwd'][self.tenors].shift(1)
+        fwd_slope = fwd.iloc[:, 0] - fwd.iloc[:, 1]
+        df = fwd_slope.rolling(window=self.window_size).agg(['mean', 'std'])
+        df['low_thresh']  = df['mean'] - df['std'] * self.sigma_thresh
+        df['high_thresh'] = df['mean'] + df['std'] * self.sigma_thresh
+        df['fwd_slope'] = fwd_slope
+        df['signal'] = 0
+        df.loc[df['fwd_slope'] >= df['high_thresh'], 'signal'] = -1
+        df.loc[df['fwd_slope'] <= df['low_thresh'], 'signal']  = 1
+        return df
+
 def main(
     zcb_fp='./data/final_proj/uszcb.csv',
     strat_results_out_fp='./data/final_proj/strat_n1A_135.csv',
 ):
     zcb = read_uszcb(zcb_fp)
+
+    # Strategy naive 1-A 135
     strat_n1A_135_results = Strat1A(
         zcb,
         tenors=[52., 156., 260.],
@@ -268,8 +339,23 @@ def main(
         sigma_thresh=1.,
         window_size=102,
     ).get_pnl()
-    strat_n1A_135_results.to_csv(strat_results_out_fp)
-    print(f"Wrote strategy returns to {strat_results_out_fp}")
+    strat_n1A_135_fp = './data/final_proj/strat_n1A_135.csv'
+    strat_n1A_135_results.to_csv(strat_n1A_135_fp)
+    print(f"Wrote strategy returns to {strat_n1A_135_fp}")
+
+    # Strategy naive 2-A 0510
+    strat_n2A_0510_results = Strat2A(
+        zcb,
+        tenors=[26., 520.],
+        capital=10_000_000,
+        leverage=5.,
+        sigma_thresh=1.,
+        window_size=102,
+    ).get_pnl()
+    strat_n2A_0510_fp = './data/final_proj/strat_n2A_0510.csv'
+    strat_n2A_0510_results.to_csv(strat_n2A_0510_fp)
+    print(f"Wrote strategy returns to {strat_n2A_0510_fp}")
+
     return strat_n1A_135_results['pnl']
 
 
