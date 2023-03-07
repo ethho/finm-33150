@@ -17,6 +17,7 @@ import math
 from typing import List, Dict, Tuple, Optional
 import functools
 import itertools
+from pprint import pprint
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -461,6 +462,11 @@ def grid_search_params(
     """
     if not search_params:
         search_params = dict()
+
+    print(f"\n{'-' * 70}")
+    print(f"Running grid search on {strat_class.__name__} using the params:")
+    pprint(search_params)
+
     varnames = list(search_params.keys())
     for paramset_tuple in itertools.product(*search_params.values()):
         paramset = {
