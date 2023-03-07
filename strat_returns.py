@@ -183,12 +183,15 @@ class StrategyBase(dict):
         # We can now calculate PnL including fees:
         pnl_pos_w_tx_cost = pnl_pos_no_fees + tx_cost_port
         pnl_tot = pnl_pos_w_tx_cost.sum(axis=1) + borrow_fee
+        total_fees = tx_cost_port.sum() + borrow_fee
 
         results = {
             'hedge_factors': self.hedge_factors,
             'return_rate_no_fees': return_rate_no_fees,
+            'pnl_tot_no_fees': pnl_tot_no_fees,
             'pnl_tot': pnl_tot,
             'pnl_pos': pnl_pos_w_tx_cost,
+            'total_fees': total_fees,
         }
         return results
 
@@ -212,6 +215,9 @@ class StrategyBase(dict):
             1:  long_results['pnl_tot'],
             -1: short_results['pnl_tot'],
             0: 0,
+            'pnl_no_fees': long_results['pnl_tot_no_fees'],
+            # Same as -pnl_no_fees by definition
+            # 'short_pnl_no_fees': short_results['pnl_tot_no_fees'],
             'signal': self.signal['signal'],
             'pnl': float('nan'),
         }, index=short_results['pnl_tot'].index)
@@ -221,6 +227,7 @@ class StrategyBase(dict):
         )
         collateral = self.capital / self.leverage
         pnl['pnl_pct'] = 100 * pnl['pnl'] / collateral
+        pnl['pnl_no_fees_pct'] = 100 * pnl['pnl_no_fees'] / collateral
         pnl['long_pnl_pct'] = 100 * pnl[1] / collateral
         pnl['short_pnl_pct'] = 100 * pnl[-1] / collateral
 
@@ -552,20 +559,34 @@ def main(
     strat_n3A_02515.get_pnl()
     strat_n3A_02515.write_all()
 
-    # Example of grid searching Strat3A on parameters sigma_thresh and window_size
+    # Grid searching n3A_02515 on parameters sigma_thresh and window_size
     grid_search_params(
         strat_class=Strat3A,
-        file_stub='./data/final_proj/strat_n3A_135',
+        file_stub='./data/final_proj/strat_n3A_02515',
 
         # Grid search these parameters
         search_params=dict(
-            sigma_thresh=[0, 0.5],
-            window_size=[52, 102]
+            sigma_thresh=[-0.5, 0, 0.25, 0.5, 1.],
+            window_size=[13, 26, 52, 102]
         ),
 
         # These parameters are held constant
         zcb=zcb,
         tenors=[13., 52., 260.],
+        capital=10_000_000,
+        leverage=5.,
+    )
+
+    # Grid search n3A_135
+    grid_search_params(
+        strat_class=Strat3A,
+        file_stub='./data/final_proj/strat_n3A_135',
+        search_params=dict(
+            sigma_thresh=[-0.5, 0, 0.25, 0.5, 1.],
+            window_size=[13, 26, 52, 102]
+        ),
+        zcb=zcb,
+        tenors=[52., 156., 260.],
         capital=10_000_000,
         leverage=5.,
     )
