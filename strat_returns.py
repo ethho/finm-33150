@@ -293,10 +293,12 @@ class Strat2A(StrategyBase):
         """
         # Calculate the hedge factors for each position as described in Chua et al 2005.
         hedge_factors = pd.Series({
-            tenor_wk: k_div_x1(tenor_wk)
-            for tenor_wk in val.columns
+            self.tenors[0]: 1.,
+            self.tenors[1]: k_div_x1(self.tenors[1]),
         })
 
+        # Multiply the long (short) tenor's factor by -1
+        # if we're buying (selling) the spread.
         if long_mult == -1:
             hedge_factors.loc[self.tenors[0]] *= -1
         elif long_mult == 1:
@@ -305,7 +307,7 @@ class Strat2A(StrategyBase):
             raise NotImplementedError(f'Invalid {long_mult=}')
 
         # Borrow (deposit) remaining cash at the 4-week rate
-        # to ensure cash neutrality.
+        # to ensure cash neutrality (58k/59)
         hedge_factors[4] = -hedge_factors[[col for col in hedge_factors.index if col != 4]].sum()
         self.hedge_factors_raw = hedge_factors
         return self.hedge_factors_raw
@@ -364,7 +366,7 @@ class Strat3A(StrategyBase):
         # Calculate the hedge factors for each position as described in Chua et al 2005.
         hedge_factors = pd.Series({
             tenor_wk: float('nan')
-            for tenor_wk in val.columns
+            for tenor_wk in self.tenors
         })
 
         sh, mid, lon = self.tenors
