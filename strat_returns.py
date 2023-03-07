@@ -16,6 +16,7 @@ import json
 import math
 from typing import List, Dict, Tuple, Optional
 import functools
+import itertools
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -86,9 +87,19 @@ class StrategyBase(dict):
         self.leverage = leverage
         self.start_date = start_date
         self.broker_borrow_rate = broker_borrow_rate
+        self._param_names = [
+            'file_stub', 'tenors', 'capital', 'leverage',
+            'start_date', 'broker_borrow_rate',
+        ]
 
     def __call__(self, *args, **kw):
         return self.get_pnl(*args, **kw)
+
+    def get_params(self) -> Dict:
+        return {
+            param_name: getattr(self, param_name)
+            for param_name in self._param_names
+        }
 
     def write_all(self):
         for df_name in (
@@ -100,6 +111,12 @@ class StrategyBase(dict):
             fp = f"{self.file_stub}_{df_name}.csv"
             df.to_csv(fp)
             print(f"Wrote '{df_name}' to {fp}")
+
+        # Write params as JSON
+        params_fp = f"{self.file_stub}_params.json"
+        with open(params_fp, "w") as f:
+            f.write(json.dumps(self.get_params(), sort_keys=True, indent=2))
+            print(f"Wrote 'params' to {params_fp}")
 
     def normalize_hedge_factors(self, hedge_factors):
         # Normalize the hedge_factors, so that the sum of hedge factors for
@@ -225,6 +242,9 @@ class Strat1A(StrategyBase):
         super(Strat1A, self).__init__(*args, **kw)
         self.sigma_thresh = sigma_thresh
         self.window_size = window_size
+        self._param_names.extend([
+            'sigma_thresh', 'window_size',
+        ])
 
     def get_hedge_factors(self, val, long_mult):
         """
@@ -285,6 +305,9 @@ class Strat2A(StrategyBase):
         self.window_size = window_size
         assert len(self.tenors) == 2, self.tenors
         assert self.tenors[0] < self.tenors[1], self.tenors
+        self._param_names.extend([
+            'sigma_thresh', 'window_size',
+        ])
 
     def get_hedge_factors(self, val, long_mult):
         """
@@ -308,7 +331,7 @@ class Strat2A(StrategyBase):
 
         # Borrow (deposit) remaining cash at the 4-week rate
         # to ensure cash neutrality (58k/59)
-        hedge_factors[4] = -hedge_factors[[col for col in hedge_factors.index if col != 4]].sum()
+        hedge_factors.loc[4] = -hedge_factors[[col for col in hedge_factors.index if col != 4]].sum()
         self.hedge_factors_raw = hedge_factors
         return self.hedge_factors_raw
 
@@ -357,6 +380,9 @@ class Strat3A(StrategyBase):
         self.window_size = window_size
         assert len(self.tenors) == 3, self.tenors
         assert self.tenors[0] < self.tenors[1] < self.tenors[2], self.tenors
+        self._param_names.extend([
+            'sigma_thresh', 'window_size',
+        ])
 
     def get_hedge_factors(self, val, long_mult):
         """
@@ -384,7 +410,7 @@ class Strat3A(StrategyBase):
 
         # Borrow (deposit) remaining cash at the 4-week rate
         # to ensure cash neutrality.
-        hedge_factors[4] = -hedge_factors[[col for col in hedge_factors.index if col != 4]].sum()
+        hedge_factors.loc[4] = -hedge_factors[[col for col in hedge_factors.index if col != 4]].sum()
         self.hedge_factors_raw = hedge_factors
         return self.hedge_factors_raw
 
@@ -420,6 +446,35 @@ class Strat3A(StrategyBase):
         df.loc[df['fwd_curv'] >= df['high_thresh'], 'signal'] = -1
         df.loc[df['fwd_curv'] <= df['low_thresh'], 'signal']  = 1
         return df
+
+def grid_search_params(
+    strat_class: type,
+    file_stub: str = './data/final_proj/strat_n3A_02515',
+    search_params: Dict[str, List] = None,
+    **constant_params,
+):
+    """
+    Search parameter space by grid search. `strat_class` should be a subclass
+    of `BaseStrategy`. `search_params` should be a str -> list mapping of
+    all possible values to try for that parameter. Extra kwargs are passed
+    as `constant_params` to the strategy and are held constant.
+    """
+    if not search_params:
+        search_params = dict()
+    varnames = list(search_params.keys())
+    for paramset_tuple in itertools.product(*search_params.values()):
+        paramset = {
+            varname: value for varname, value
+            in zip(varnames, paramset_tuple)
+        }
+        paramset_str = "_".join(f"{name}{value}" for name, value in paramset.items())
+        strat = strat_class(
+            file_stub=f"{file_stub}_{paramset_str}",
+            **constant_params,
+            **paramset,
+        )
+        strat.get_pnl()
+        strat.write_all()
 
 def main(
     zcb_fp='./data/final_proj/uszcb.csv',
@@ -491,6 +546,23 @@ def main(
     strat_n3A_02515.get_pnl()
     strat_n3A_02515.write_all()
 
+    # Example of grid searching Strat3A on parameters sigma_thresh and window_size
+    grid_search_params(
+        strat_class=Strat3A,
+        file_stub='./data/final_proj/strat_n3A_135',
+
+        # Grid search these parameters
+        search_params=dict(
+            sigma_thresh=[0, 0.5],
+            window_size=[52, 102]
+        ),
+
+        # These parameters are held constant
+        zcb=zcb,
+        tenors=[13., 52., 260.],
+        capital=10_000_000,
+        leverage=5.,
+    )
 
 if __name__ == '__main__':
     main(*sys.argv[1:])
