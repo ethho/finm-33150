@@ -22,6 +22,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm, probplot
+from statsmodels.regression.rolling import RollingWLS
 import quandl
 import plotly.express as px
 try:
@@ -395,7 +396,7 @@ class Strat3A(StrategyBase):
     def get_hedge_factors(self, val, long_mult):
         """
         Assuming duration and cash-weighted
-        positions for Strategy 2-A as described in Chua et al 2005.
+        positions for Strategy 3-A as described in Chua et al 2005.
         """
         # Calculate the hedge factors for each position as described in Chua et al 2005.
         hedge_factors = pd.Series({
@@ -455,6 +456,186 @@ class Strat3A(StrategyBase):
         df.loc[df['fwd_curv'] <= df['low_thresh'], 'signal']  = 1
         return df
 
+class StratP3A(StrategyBase):
+    """
+    Strat3A, but the signal is based on the predictive regression
+    developed in 20230307_p_model.ipynb.
+    """
+
+    def __init__(
+        self,
+        *args,
+        window_size=102,
+        half_life=12,
+        ci_alpha=0.2,
+        **kw,
+    ):
+        super(StratP3A, self).__init__(*args, **kw)
+        self.window_size = window_size
+        self.half_life = half_life
+        self.ci_alpha = ci_alpha
+        assert len(self.tenors) == 3, self.tenors
+        assert self.tenors[0] < self.tenors[1] < self.tenors[2], self.tenors
+        self._param_names.extend([
+            'half_life', 'window_size', 'ci_alpha',
+        ])
+
+    def get_hedge_factors(self, val, long_mult):
+        """
+        Same as Strat3A.
+
+        Assuming duration and cash-weighted
+        positions for Strategy 3-A as described in Chua et al 2005.
+        """
+        # Calculate the hedge factors for each position as described in Chua et al 2005.
+        hedge_factors = pd.Series({
+            tenor_wk: float('nan')
+            for tenor_wk in self.tenors
+        })
+
+        sh, mid, lon = self.tenors
+        hedge_factors[lon] = k_div_x1(lon)
+        hedge_factors[sh] = 1.
+        hedge_factors[mid] = 2 * k_div_x1(mid)
+
+        if long_mult == 1:
+            hedge_factors[mid] *= -1
+        elif long_mult == -1:
+            hedge_factors[sh] *= -1
+            hedge_factors[lon] *= -1
+        else:
+            raise NotImplementedError(f'Invalid {long_mult=}')
+
+        # Borrow (deposit) remaining cash at the 4-week rate
+        # to ensure cash neutrality.
+        hedge_factors.loc[4] = -hedge_factors[[col for col in hedge_factors.index if col != 4]].sum()
+        self.hedge_factors_raw = hedge_factors
+        return self.hedge_factors_raw
+
+    def get_signal(self) -> pd.Series:
+        """
+        Generate the trading signal for naive Strategy 3-A. The trading signal
+        will be 1 if we should take a long position on the 3-A portfolio,
+        0 if we should be flat, and -1 if we should short. A non-zero signal
+        is emitted if the curvature of the 4-week forward rate curve
+        is >= `sigma_thresh` (<= -`sigma_thresh` for short) standard
+        deviations from the mean historical curvature, where mean and STD
+        are calculated over the last `window_size` 4-week periods.
+        """
+        # Here, we shift the signal by one period (4 weeks)
+        # to avoid lookahead bias, so that the date index represents t,
+        # the time when we're selling the position that we decided on a month ago.
+        # This is consistent with our date indexing for portfolio returns data:
+        # that date represents the day we _closed_ our 4-week long position.
+        fwd = self.zcb.stack(1).swaplevel().loc['fwd'][self.tenors].shift(1)
+
+        # Calculate curvature (Eq. 2 in Chua et al 2005)
+        sh, mid, lon = self.tenors
+        fwd_curv = (
+            ((fwd[mid] - fwd[sh]) / (mid - sh)) -
+            ((fwd[lon] - fwd[mid]) / (lon - mid))
+        )
+
+        # Calculate Z-score of curvature relative to its `window_size`-period
+        # simple moving average
+        curv_ma = fwd_curv.rolling(window=self.window_size).agg(['mean', 'std'])
+        curv_ma['curv_z'] = (fwd_curv - curv_ma['mean']) / curv_ma['std']
+
+        # Get a regression coefficient (with CI bounds) by fitting
+        # a rolling, exponentially weighted, univariate least squares
+        self.ew_model = self.fit_ewls(curvature=curv_ma)
+        coeff = self.ew_model.conf_int(alpha=self.ci_alpha)
+        coeff.columns = ['ci_lower', 'ci_upper']
+        coeff.loc[:, 'ci_mid'] = self.ew_model.params
+
+        # Use the regression coefficient to predict today's PnL (without fees)
+        # from last month's curvature Z-score, with confidence interval
+        # at alpha equal to `self.ci_alpha`.
+        df = curv_ma.merge(
+            coeff, how='inner', left_index=True,
+            right_index=True, suffixes=(None, '_coeff'),
+        )
+        pred = coeff.multiply(df['curv_z'], axis=0)
+        df['pnl_no_fees_pred'] = pred['ci_mid']
+        pred[['ci_lower', 'ci_mid', 'ci_upper']] = (
+            pred[['ci_lower', 'ci_mid', 'ci_upper']]
+            .apply(lambda row: row.sort_values(ascending=row.ci_mid >= 0, ignore_index=True), axis=1)
+        )
+
+        # Get the total fees paid for long and short portfolios.
+        # They _should_ be the same.
+        long_fees  = abs(self.strat_returns(is_long=True )['total_fees'])
+        short_fees = abs(self.strat_returns(is_long=False)['total_fees'])
+        assert long_fees == short_fees, (long_fees, short_fees)
+
+        # Use the CI upper or CI lower (whichever is optimistic)
+        # to calculate PnL with fees, depending on whether the suggested
+        # position (CI midpoint) is likely to be long or short.
+        df['pnl_pred'] = pred.apply(
+            lambda row:
+                # PnL minus fees if long
+                max(row.ci_upper - long_fees, 0.) if row.ci_mid >= 0 else
+                # PnL (negative) plus fees if short
+                min(row.ci_upper + long_fees, 0.),
+        axis=1)
+
+        # Generate our signal: buy (sell) the portfolio if the predicted
+        # PnL plus fees is positive.
+        df['signal'] = 0
+        df.loc[df['pnl_pred'] > 0, 'signal'] = 1
+        df.loc[df['pnl_pred'] < 0, 'signal'] = -1
+        return df
+
+    def pred_with_fees(self, without: pd.Series, fees: float):
+        """
+        Get PnL with fees from PnL `without` the added fee `fees`.
+        This function sets PnL to a minimum of zero if fees are larger
+        than the PnL without.
+        """
+        assert fees > 0, fees
+        return without.apply(
+            lambda x:
+                max(x - fees, 0) if x >= 0 else
+                min(x + fees, 0)
+        )
+
+    def fit_ewls(
+        self,
+        curvature: pd.Series,
+        equation="pnl ~ curv_z + 0",
+        contemp_window=0,
+    ):
+        # Get strategy returns without fees
+        long_strat_results = self.strat_returns(is_long=True)
+        pnl = long_strat_results['pnl_tot_no_fees']
+        pnl.name = 'pnl'
+        df = curvature.merge(pnl, how='inner', left_index=True, right_index=True)
+
+        # Trim data to first non-null index
+        null_indices = df[df[['pnl', 'curv_z']].isnull().any(axis=1)].index
+        if not null_indices.empty:
+            last_null = null_indices[-1]
+            first_non_null = df.loc[last_null:].index[1]
+            df = df.loc[first_non_null:]
+
+        # Calculate exponential weights from half-life
+        lambda_ = pow(1/2., 1/self.half_life)
+        weights = np.array([pow(lambda_, t) for t in range(len(df) - contemp_window)])[::-1]
+        weights *= 1e3
+
+        # Fit EWLS
+        exwt_mod = RollingWLS.from_formula(
+            equation,
+            data=df.iloc[contemp_window:],
+            window=None,
+            min_nobs=self.half_life * 2,
+            expanding=True,
+            weights=weights
+        )
+        exwt = exwt_mod.fit()
+        return exwt
+
+
 def grid_search_params(
     strat_class: type,
     file_stub: str = './data/final_proj/strat_n3A_02515',
@@ -494,102 +675,118 @@ def main(
 ):
     zcb = read_uszcb(zcb_fp)
 
-    # Strategy naive 1-A 135
-    strat_n1A_135 = Strat1A(
-        zcb,
-        tenors=[52., 156., 260.],
-        capital=10_000_000,
-        leverage=5.,
-        sigma_thresh=0.,
-        window_size=102,
-        file_stub='./data/final_proj/strat_n1A_135',
-    )
-    strat_n1A_135.get_pnl()
-    strat_n1A_135.write_all()
+    # # Strategy naive 1-A 135
+    # strat_n1A_135 = Strat1A(
+    #     zcb,
+    #     tenors=[52., 156., 260.],
+    #     capital=10_000_000,
+    #     leverage=5.,
+    #     sigma_thresh=0.,
+    #     window_size=102,
+    #     file_stub='./data/final_proj/strat_n1A_135',
+    # )
+    # strat_n1A_135.get_pnl()
+    # strat_n1A_135.write_all()
 
-    # Strategy naive 2-A 0510
-    strat_n2A_0510 = Strat2A(
-        zcb,
-        tenors=[26., 520.],
-        capital=10_000_000,
-        leverage=5.,
-        sigma_thresh=0.,
-        window_size=102,
-        file_stub='./data/final_proj/strat_n2A_0510',
-    )
-    strat_n2A_0510.get_pnl()
-    strat_n2A_0510.write_all()
+    # # Strategy naive 2-A 0510
+    # strat_n2A_0510 = Strat2A(
+    #     zcb,
+    #     tenors=[26., 520.],
+    #     capital=10_000_000,
+    #     leverage=5.,
+    #     sigma_thresh=0.,
+    #     window_size=102,
+    #     file_stub='./data/final_proj/strat_n2A_0510',
+    # )
+    # strat_n2A_0510.get_pnl()
+    # strat_n2A_0510.write_all()
 
-    # Strategy naive 2-A 220
-    strat_n2A_220= Strat2A(
-        zcb,
-        tenors=[104., 1040.],
-        capital=10_000_000,
-        leverage=5.,
-        sigma_thresh=0.,
-        window_size=102,
-        file_stub='./data/final_proj/strat_n2A_220',
-    )
-    strat_n2A_220.get_pnl()
-    strat_n2A_220.write_all()
+    # # Strategy naive 2-A 220
+    # strat_n2A_220= Strat2A(
+    #     zcb,
+    #     tenors=[104., 1040.],
+    #     capital=10_000_000,
+    #     leverage=5.,
+    #     sigma_thresh=0.,
+    #     window_size=102,
+    #     file_stub='./data/final_proj/strat_n2A_220',
+    # )
+    # strat_n2A_220.get_pnl()
+    # strat_n2A_220.write_all()
 
-    # Strategy naive 3-A 135
-    strat_n3A_135= Strat3A(
-        zcb,
-        tenors=[52., 156., 260.],
-        capital=10_000_000,
-        leverage=5.,
-        sigma_thresh=0.,
-        window_size=102,
-        file_stub='./data/final_proj/strat_n3A_135',
-    )
-    strat_n3A_135.get_pnl()
-    strat_n3A_135.write_all()
+    # # Strategy naive 3-A 135
+    # strat_n3A_135= Strat3A(
+    #     zcb,
+    #     tenors=[52., 156., 260.],
+    #     capital=10_000_000,
+    #     leverage=5.,
+    #     sigma_thresh=0.,
+    #     window_size=102,
+    #     file_stub='./data/final_proj/strat_n3A_135',
+    # )
+    # strat_n3A_135.get_pnl()
+    # strat_n3A_135.write_all()
 
-    # Strategy naive 3-A 02515
-    strat_n3A_02515 = Strat3A(
-        zcb,
-        tenors=[13., 52., 260.],
-        capital=10_000_000,
-        leverage=5.,
-        sigma_thresh=0.,
-        window_size=102,
-        file_stub='./data/final_proj/strat_n3A_02515',
-    )
-    strat_n3A_02515.get_pnl()
-    strat_n3A_02515.write_all()
+    # # Strategy naive 3-A 02515
+    # strat_n3A_02515 = Strat3A(
+    #     zcb,
+    #     tenors=[13., 52., 260.],
+    #     capital=10_000_000,
+    #     leverage=5.,
+    #     sigma_thresh=0.,
+    #     window_size=102,
+    #     file_stub='./data/final_proj/strat_n3A_02515',
+    # )
+    # strat_n3A_02515.get_pnl()
+    # strat_n3A_02515.write_all()
 
-    # Grid searching n3A_02515 on parameters sigma_thresh and window_size
+    # # Grid searching n3A_02515 on parameters sigma_thresh and window_size
+    # grid_search_params(
+    #     strat_class=Strat3A,
+    #     file_stub='./data/final_proj/strat_n3A_02515',
+
+    #     # Grid search these parameters
+    #     search_params=dict(
+    #         sigma_thresh=[-0.5, 0, 0.25, 0.5, 1.],
+    #         window_size=[13, 26, 52, 102]
+    #     ),
+
+    #     # These parameters are held constant
+    #     zcb=zcb,
+    #     tenors=[13., 52., 260.],
+    #     capital=10_000_000,
+    #     leverage=5.,
+    # )
+
+    # # Grid search n3A_135
+    # grid_search_params(
+    #     strat_class=Strat3A,
+    #     file_stub='./data/final_proj/strat_n3A_135',
+    #     search_params=dict(
+    #         sigma_thresh=[-0.5, 0, 0.25, 0.5, 1.],
+    #         window_size=[13, 26, 52, 102]
+    #     ),
+    #     zcb=zcb,
+    #     tenors=[52., 156., 260.],
+    #     capital=10_000_000,
+    #     leverage=5.,
+    # )
+
+    # Grid search p3A_135
     grid_search_params(
-        strat_class=Strat3A,
-        file_stub='./data/final_proj/strat_n3A_02515',
-
-        # Grid search these parameters
+        strat_class=StratP3A,
+        file_stub='./data/final_proj/strat_p3A_135',
         search_params=dict(
-            sigma_thresh=[-0.5, 0, 0.25, 0.5, 1.],
-            window_size=[13, 26, 52, 102]
-        ),
-
-        # These parameters are held constant
-        zcb=zcb,
-        tenors=[13., 52., 260.],
-        capital=10_000_000,
-        leverage=5.,
-    )
-
-    # Grid search n3A_135
-    grid_search_params(
-        strat_class=Strat3A,
-        file_stub='./data/final_proj/strat_n3A_135',
-        search_params=dict(
-            sigma_thresh=[-0.5, 0, 0.25, 0.5, 1.],
-            window_size=[13, 26, 52, 102]
+            half_life=[6, 12],
+            window_size=[13, 26, 52, 102],
+            ci_alpha=[0.2, 0.4, 0.6],
         ),
         zcb=zcb,
         tenors=[52., 156., 260.],
         capital=10_000_000,
         leverage=5.,
     )
+
 
 if __name__ == '__main__':
     main(*sys.argv[1:])
