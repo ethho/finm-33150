@@ -1,4 +1,4 @@
-date,mean,std,curv_z,ci_lower,ci_upper,ci_mid,pnl_no_fees_pred,pnl_pred,signal
+date,mean,std,z_score,ci_lower,ci_upper,ci_mid,pnl_no_fees_pred,pnl_pred,signal
 2001-08-29,1.60306400679124e-05,2.5365393986885355e-05,-0.3742492908502745,,,,,,0
 2001-09-26,1.4069079664424197e-05,2.458770619374962e-05,-0.6099822136786013,,,,,,0
 2001-10-24,1.4677518613838101e-05,2.419671570982212e-05,-0.3085699170015536,,,,,,0

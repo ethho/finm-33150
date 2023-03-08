@@ -1,0 +1,14 @@
+{
+  "broker_borrow_rate": 50,
+  "capital": 10000000,
+  "file_stub": "./data/final_proj/strat_1B_135_window_size13_sigma_thresh1.0",
+  "leverage": 5.0,
+  "sigma_thresh": 1.0,
+  "start_date": null,
+  "tenors": [
+    52.0,
+    156.0,
+    260.0
+  ],
+  "window_size": 13
+}

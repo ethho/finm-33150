@@ -5,6 +5,7 @@
   "file_stub": "./data/final_proj/strat_3D_135_half_life12_window_size26_ci_alpha0.05",
   "half_life": 12,
   "leverage": 5.0,
+  "sigma_thresh": 0.8,
   "start_date": null,
   "tenors": [
     52.0,
