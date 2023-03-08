@@ -1,0 +1,15 @@
+{
+  "broker_borrow_rate": 50,
+  "capital": 10000000,
+  "ci_alpha": 0.6,
+  "file_stub": "./data/final_proj/strat_3D_135_half_life6_window_size26_ci_alpha0.6",
+  "half_life": 6,
+  "leverage": 5.0,
+  "start_date": null,
+  "tenors": [
+    52.0,
+    156.0,
+    260.0
+  ],
+  "window_size": 26
+}

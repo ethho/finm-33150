@@ -198,18 +198,25 @@ class StrategyBase(dict):
 
     def get_pnl(self):
         """
-        Calculate the return series for Strategy 1-A given a `signal`.
+        Calculate the monthly returns for long and short positions on this
+        portfolio. Calculate PnL by choosing which (long, short, or flat)
+        position to take based on the Strategy's `signal`.
         """
         self.signal = self.get_signal()
         assert 'signal' in self.signal.columns
 
-        # Strategy pt1A_135l: portfolio returns for long position on Strategy 1-A
-        # portfolio using 1, 3, 5 year maturities
+        # Returns for the long position
         long_results = self.strat_returns(is_long=True)
 
-        # Strategy pt1A_135s: portfolio returns for short position on Strategy 1-A
-        # portfolio using 1, 3, 5 year maturities
+        # Portfolio returns for short position
         short_results = self.strat_returns(is_long=False)
+
+        # Get the total fees paid for long and short portfolios.
+        # They _should_ be the same.
+        long_fees  = abs(long_results['total_fees'])
+        short_fees = abs(short_results['total_fees'])
+        assert long_fees == short_fees, (long_fees, short_fees)
+        self.fees = long_fees
 
         # Choose long, short, or flat depending on `signal`
         pnl = pd.DataFrame({
@@ -234,6 +241,54 @@ class StrategyBase(dict):
 
         self.pnl = pnl
         return self.pnl
+
+    def fit_ewls(
+        self,
+        exog: pd.Series,
+        equation="pnl ~ curv_z + 0",
+        half_life: float = 6,
+        contemp_window=0,
+    ):
+        """
+        Fit a rolling exponentially weighted least squares regression model.
+
+        Fit a univariate `statsmodels.regression.rolling.RollingWLS`
+        with exponentially decaying weights (half life equal to `half_life`),
+        using the PnL without fees as the endogenous variable, and `exog` as the
+        exogenous variable. `equation` is a string representing the
+        linear relationship. `contemp_window` is unused.
+        """
+        # Get strategy returns without fees
+        long_strat_results = self.strat_returns(is_long=True)
+        pnl = long_strat_results['pnl_tot_no_fees']
+        pnl.name = 'pnl'
+        df = pnl.to_frame(name='pnl').merge(
+            exog, how='inner', left_index=True,
+            right_index=True, suffixes=('_pnl', None))
+
+        # Trim data to first non-null index
+        null_indices = df[df[['pnl', exog.name]].isnull().any(axis=1)].index
+        if not null_indices.empty:
+            last_null = null_indices[-1]
+            first_non_null = df.loc[last_null:].index[1]
+            df = df.loc[first_non_null:]
+
+        # Calculate exponential weights from half-life
+        lambda_ = pow(1/2., 1/half_life)
+        weights = np.array([pow(lambda_, t) for t in range(len(df) - contemp_window)])[::-1]
+        weights *= 1e3
+
+        # Fit EWLS
+        exwt_mod = RollingWLS.from_formula(
+            equation,
+            data=df.iloc[contemp_window:],
+            window=None,
+            min_nobs=half_life * 2,
+            expanding=True,
+            weights=weights
+        )
+        exwt = exwt_mod.fit()
+        return exwt
 
 
 class Strat1A(StrategyBase):
@@ -456,10 +511,12 @@ class Strat3A(StrategyBase):
         df.loc[df['fwd_curv'] <= df['low_thresh'], 'signal']  = 1
         return df
 
-class StratP3A(StrategyBase):
+class Strat3C(StrategyBase):
     """
     Strat3A, but the signal is based on the predictive regression
-    developed in 20230307_p_model.ipynb.
+    developed in 20230307_p_model.ipynb. The signal is the predicted
+    PnL (with fees) from the rolling exponentially weighted linear regression on
+    the curvature Z-score.
     """
 
     def __init__(
@@ -470,7 +527,7 @@ class StratP3A(StrategyBase):
         ci_alpha=0.2,
         **kw,
     ):
-        super(StratP3A, self).__init__(*args, **kw)
+        super(Strat3C, self).__init__(*args, **kw)
         self.window_size = window_size
         self.half_life = half_life
         self.ci_alpha = ci_alpha
@@ -514,13 +571,15 @@ class StratP3A(StrategyBase):
 
     def get_signal(self) -> pd.Series:
         """
-        Generate the trading signal for naive Strategy 3-A. The trading signal
-        will be 1 if we should take a long position on the 3-A portfolio,
+        Generate the trading signal for Strategy 3-C. The trading signal
+        will be 1 if we should take a long position on the 3-C portfolio,
         0 if we should be flat, and -1 if we should short. A non-zero signal
-        is emitted if the curvature of the 4-week forward rate curve
-        is >= `sigma_thresh` (<= -`sigma_thresh` for short) standard
-        deviations from the mean historical curvature, where mean and STD
-        are calculated over the last `window_size` 4-week periods.
+        is emitted if any value in the confidence interval (alpha equal to
+        `ci_alpha`)of predicted PnL is greater than the trading fees.
+        This prediction is generated by a univariate rolling linear regression
+        with exponentially decaying weights. The endogenous variable is PnL and
+        the exogenous variable is the curvature Z-score, calculated over the
+        pas `window_size` 4-week periods.
         """
         # Here, we shift the signal by one period (4 weeks)
         # to avoid lookahead bias, so that the date index represents t,
@@ -539,11 +598,17 @@ class StratP3A(StrategyBase):
         # Calculate Z-score of curvature relative to its `window_size`-period
         # simple moving average
         curv_ma = fwd_curv.rolling(window=self.window_size).agg(['mean', 'std'])
-        curv_ma['curv_z'] = (fwd_curv - curv_ma['mean']) / curv_ma['std']
+        curv_z = (fwd_curv - curv_ma['mean']) / curv_ma['std']
+        curv_z.name = 'curv_z'
+        curv_ma['curv_z'] = curv_z
 
         # Get a regression coefficient (with CI bounds) by fitting
         # a rolling, exponentially weighted, univariate least squares
-        self.ew_model = self.fit_ewls(curvature=curv_ma)
+        self.ew_model = self.fit_ewls(
+            exog=curv_z,
+            equation="pnl ~ curv_z + 0",
+            half_life=self.half_life,
+        )
         coeff = self.ew_model.conf_int(alpha=self.ci_alpha)
         coeff.columns = ['ci_lower', 'ci_upper']
         coeff.loc[:, 'ci_mid'] = self.ew_model.params
@@ -580,7 +645,7 @@ class StratP3A(StrategyBase):
         axis=1)
 
         # Generate our signal: buy (sell) the portfolio if the predicted
-        # PnL plus fees is positive.
+        # PnL plus fees is positive (negative).
         df['signal'] = 0
         df.loc[df['pnl_pred'] > 0, 'signal'] = 1
         df.loc[df['pnl_pred'] < 0, 'signal'] = -1
@@ -599,41 +664,129 @@ class StratP3A(StrategyBase):
                 min(x + fees, 0)
         )
 
-    def fit_ewls(
+class Strat3D(Strat3C):
+    """
+    Strat3C, but we don't close our position if the signal is the same
+    as last month, saving on transaction fees. The signal is the same, except
+    that we predict PnL without fees.
+    """
+
+    def __init__(
         self,
-        curvature: pd.Series,
-        equation="pnl ~ curv_z + 0",
-        contemp_window=0,
+        *args,
+        **kw,
     ):
-        # Get strategy returns without fees
-        long_strat_results = self.strat_returns(is_long=True)
-        pnl = long_strat_results['pnl_tot_no_fees']
-        pnl.name = 'pnl'
-        df = curvature.merge(pnl, how='inner', left_index=True, right_index=True)
+        super(Strat3D, self).__init__(*args, **kw)
 
-        # Trim data to first non-null index
-        null_indices = df[df[['pnl', 'curv_z']].isnull().any(axis=1)].index
-        if not null_indices.empty:
-            last_null = null_indices[-1]
-            first_non_null = df.loc[last_null:].index[1]
-            df = df.loc[first_non_null:]
+    def __get_signal(self) -> pd.Series:
+        """
+        Generate the trading signal for Strategy 3-D. The trading signal
+        will be 1 if we should take a long position on the 3-D portfolio,
+        0 if we should be flat, and -1 if we should short. A non-zero signal
+        is emitted if any value in the confidence interval (alpha equal to
+        `ci_alpha`) of predicted PnL is greater than zero.
+        This prediction is generated by a univariate rolling linear regression
+        with exponentially decaying weights. The endogenous variable is PnL and
+        the exogenous variable is the curvature Z-score, calculated over the
+        pas `window_size` 4-week periods.
+        """
+        # Here, we shift the signal by one period (4 weeks)
+        # to avoid lookahead bias, so that the date index represents t,
+        # the time when we're selling the position that we decided on a month ago.
+        # This is consistent with our date indexing for portfolio returns data:
+        # that date represents the day we _closed_ our 4-week long position.
+        fwd = self.zcb.stack(1).swaplevel().loc['fwd'][self.tenors].shift(1)
 
-        # Calculate exponential weights from half-life
-        lambda_ = pow(1/2., 1/self.half_life)
-        weights = np.array([pow(lambda_, t) for t in range(len(df) - contemp_window)])[::-1]
-        weights *= 1e3
-
-        # Fit EWLS
-        exwt_mod = RollingWLS.from_formula(
-            equation,
-            data=df.iloc[contemp_window:],
-            window=None,
-            min_nobs=self.half_life * 2,
-            expanding=True,
-            weights=weights
+        # Calculate curvature (Eq. 2 in Chua et al 2005)
+        sh, mid, lon = self.tenors
+        fwd_curv = (
+            ((fwd[mid] - fwd[sh]) / (mid - sh)) -
+            ((fwd[lon] - fwd[mid]) / (lon - mid))
         )
-        exwt = exwt_mod.fit()
-        return exwt
+
+        # Calculate Z-score of curvature relative to its `window_size`-period
+        # simple moving average
+        curv_ma = fwd_curv.rolling(window=self.window_size).agg(['mean', 'std'])
+        curv_z = (fwd_curv - curv_ma['mean']) / curv_ma['std']
+        curv_z.name = 'curv_z'
+        curv_ma['curv_z'] = curv_z
+
+        # Get a regression coefficient (with CI bounds) by fitting
+        # a rolling, exponentially weighted, univariate least squares
+        self.ew_model = self.fit_ewls(
+            exog=curv_z,
+            equation="pnl ~ curv_z + 0",
+            half_life=self.half_life,
+        )
+        coeff = self.ew_model.conf_int(alpha=self.ci_alpha)
+        coeff.columns = ['ci_lower', 'ci_upper']
+        coeff.loc[:, 'ci_mid'] = self.ew_model.params
+
+        # Use the regression coefficient to predict today's PnL (without fees)
+        # from last month's curvature Z-score, with confidence interval
+        # at alpha equal to `self.ci_alpha`.
+        df = curv_ma.merge(
+            coeff, how='inner', left_index=True,
+            right_index=True, suffixes=(None, '_coeff'),
+        )
+        pred = coeff.multiply(df['curv_z'], axis=0)
+        df['pnl_no_fees_pred'] = pred['ci_mid']
+        pred[['ci_lower', 'ci_mid', 'ci_upper']] = (
+            pred[['ci_lower', 'ci_mid', 'ci_upper']]
+            .apply(lambda row: row.sort_values(ascending=row.ci_mid >= 0, ignore_index=True), axis=1)
+        )
+
+        # Generate our signal: buy (sell) the portfolio if the predicted
+        # PnL plus fees is positive.
+        df['signal'] = 0
+        df.loc[df['ci_upper'] > 0, 'signal'] = 1
+        df.loc[df['ci_upper'] < 0, 'signal'] = -1
+        return df
+
+    def _get_pnl_if_same_sig(self, row):
+        """
+        Get the PnL depending on `signal`, and whether signal is the same as
+        last time. If signal is same as last time, use the PnL with no fees
+        since we already incorporated the total fees for the position during the
+        first month.
+        """
+        if row.signal == 1:
+            if row.same_sig:
+                return row.pnl_no_fees
+            else:
+                return row[1]
+        elif row.signal == -1:
+            if row.same_sig:
+                return -row.pnl_no_fees
+            else:
+                return row[-1]
+        else:
+            return 0.
+
+    def get_pnl(self):
+        """
+        Overrides parent method `StrategyBase.get_pnl`.
+
+        If we have an open position and the signal is the same, use the
+        fee-free PnL, since this represents our profits when we avoid closing
+        and reopening the same position.
+        """
+        # Reuse the parent's method
+        pnl = StrategyBase.get_pnl(self)
+
+        # `pnl` column includes the fee for buying and selling the position
+        # once each. This means that we can maintain our position if the signal
+        # is the same, and save the transaction fee amount by avoiding closing
+        # and reopening the same position.
+        pnl['same_sig'] = pnl.signal == pnl.signal.shift(1)
+        pnl['pnl'] = pnl.apply(self._get_pnl_if_same_sig, axis=1)
+
+        # We need to recalculate `pnl_pct`
+        collateral = self.capital / self.leverage
+        pnl['pnl_pct'] = 100 * pnl['pnl'] / collateral
+
+        self.pnl = pnl
+        return pnl
 
 
 def grid_search_params(
@@ -772,14 +925,14 @@ def main(
         leverage=5.,
     )
 
-    # Grid search p3A_135
+    # Grid search 3C_135
     grid_search_params(
-        strat_class=StratP3A,
-        file_stub='./data/final_proj/strat_p3A_135',
+        strat_class=Strat3C,
+        file_stub='./data/final_proj/strat_3C_135',
         search_params=dict(
             half_life=[6, 12],
             window_size=[13, 26, 52, 102],
-            ci_alpha=[0.2, 0.4, 0.6],
+            ci_alpha=[0.05, 0.2, 0.4, 0.6],
         ),
         zcb=zcb,
         tenors=[52., 156., 260.],
@@ -787,6 +940,20 @@ def main(
         leverage=5.,
     )
 
+    # Grid search 3D_135
+    grid_search_params(
+        strat_class=Strat3D,
+        file_stub='./data/final_proj/strat_3D_135',
+        search_params=dict(
+            half_life=[6, 12],
+            window_size=[13, 26, 52, 102],
+            ci_alpha=[0.05, 0.2, 0.4, 0.6],
+        ),
+        zcb=zcb,
+        tenors=[52., 156., 260.],
+        capital=10_000_000,
+        leverage=5.,
+    )
 
 if __name__ == '__main__':
     main(*sys.argv[1:])
