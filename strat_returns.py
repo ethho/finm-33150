@@ -675,102 +675,102 @@ def main(
 ):
     zcb = read_uszcb(zcb_fp)
 
-    # # Strategy naive 1-A 135
-    # strat_n1A_135 = Strat1A(
-    #     zcb,
-    #     tenors=[52., 156., 260.],
-    #     capital=10_000_000,
-    #     leverage=5.,
-    #     sigma_thresh=0.,
-    #     window_size=102,
-    #     file_stub='./data/final_proj/strat_n1A_135',
-    # )
-    # strat_n1A_135.get_pnl()
-    # strat_n1A_135.write_all()
+    # Strategy naive 1-A 135
+    strat_n1A_135 = Strat1A(
+        zcb,
+        tenors=[52., 156., 260.],
+        capital=10_000_000,
+        leverage=5.,
+        sigma_thresh=0.,
+        window_size=102,
+        file_stub='./data/final_proj/strat_n1A_135',
+    )
+    strat_n1A_135.get_pnl()
+    strat_n1A_135.write_all()
 
-    # # Strategy naive 2-A 0510
-    # strat_n2A_0510 = Strat2A(
-    #     zcb,
-    #     tenors=[26., 520.],
-    #     capital=10_000_000,
-    #     leverage=5.,
-    #     sigma_thresh=0.,
-    #     window_size=102,
-    #     file_stub='./data/final_proj/strat_n2A_0510',
-    # )
-    # strat_n2A_0510.get_pnl()
-    # strat_n2A_0510.write_all()
+    # Strategy naive 2-A 0510
+    strat_n2A_0510 = Strat2A(
+        zcb,
+        tenors=[26., 520.],
+        capital=10_000_000,
+        leverage=5.,
+        sigma_thresh=0.,
+        window_size=102,
+        file_stub='./data/final_proj/strat_n2A_0510',
+    )
+    strat_n2A_0510.get_pnl()
+    strat_n2A_0510.write_all()
 
-    # # Strategy naive 2-A 220
-    # strat_n2A_220= Strat2A(
-    #     zcb,
-    #     tenors=[104., 1040.],
-    #     capital=10_000_000,
-    #     leverage=5.,
-    #     sigma_thresh=0.,
-    #     window_size=102,
-    #     file_stub='./data/final_proj/strat_n2A_220',
-    # )
-    # strat_n2A_220.get_pnl()
-    # strat_n2A_220.write_all()
+    # Strategy naive 2-A 220
+    strat_n2A_220= Strat2A(
+        zcb,
+        tenors=[104., 1040.],
+        capital=10_000_000,
+        leverage=5.,
+        sigma_thresh=0.,
+        window_size=102,
+        file_stub='./data/final_proj/strat_n2A_220',
+    )
+    strat_n2A_220.get_pnl()
+    strat_n2A_220.write_all()
 
-    # # Strategy naive 3-A 135
-    # strat_n3A_135= Strat3A(
-    #     zcb,
-    #     tenors=[52., 156., 260.],
-    #     capital=10_000_000,
-    #     leverage=5.,
-    #     sigma_thresh=0.,
-    #     window_size=102,
-    #     file_stub='./data/final_proj/strat_n3A_135',
-    # )
-    # strat_n3A_135.get_pnl()
-    # strat_n3A_135.write_all()
+    # Strategy naive 3-A 135
+    strat_n3A_135= Strat3A(
+        zcb,
+        tenors=[52., 156., 260.],
+        capital=10_000_000,
+        leverage=5.,
+        sigma_thresh=0.,
+        window_size=102,
+        file_stub='./data/final_proj/strat_n3A_135',
+    )
+    strat_n3A_135.get_pnl()
+    strat_n3A_135.write_all()
 
-    # # Strategy naive 3-A 02515
-    # strat_n3A_02515 = Strat3A(
-    #     zcb,
-    #     tenors=[13., 52., 260.],
-    #     capital=10_000_000,
-    #     leverage=5.,
-    #     sigma_thresh=0.,
-    #     window_size=102,
-    #     file_stub='./data/final_proj/strat_n3A_02515',
-    # )
-    # strat_n3A_02515.get_pnl()
-    # strat_n3A_02515.write_all()
+    # Strategy naive 3-A 02515
+    strat_n3A_02515 = Strat3A(
+        zcb,
+        tenors=[13., 52., 260.],
+        capital=10_000_000,
+        leverage=5.,
+        sigma_thresh=0.,
+        window_size=102,
+        file_stub='./data/final_proj/strat_n3A_02515',
+    )
+    strat_n3A_02515.get_pnl()
+    strat_n3A_02515.write_all()
 
-    # # Grid searching n3A_02515 on parameters sigma_thresh and window_size
-    # grid_search_params(
-    #     strat_class=Strat3A,
-    #     file_stub='./data/final_proj/strat_n3A_02515',
+    # Grid searching n3A_02515 on parameters sigma_thresh and window_size
+    grid_search_params(
+        strat_class=Strat3A,
+        file_stub='./data/final_proj/strat_n3A_02515',
 
-    #     # Grid search these parameters
-    #     search_params=dict(
-    #         sigma_thresh=[-0.5, 0, 0.25, 0.5, 1.],
-    #         window_size=[13, 26, 52, 102]
-    #     ),
+        # Grid search these parameters
+        search_params=dict(
+            sigma_thresh=[-0.5, 0, 0.25, 0.5, 1.],
+            window_size=[13, 26, 52, 102]
+        ),
 
-    #     # These parameters are held constant
-    #     zcb=zcb,
-    #     tenors=[13., 52., 260.],
-    #     capital=10_000_000,
-    #     leverage=5.,
-    # )
+        # These parameters are held constant
+        zcb=zcb,
+        tenors=[13., 52., 260.],
+        capital=10_000_000,
+        leverage=5.,
+    )
 
-    # # Grid search n3A_135
-    # grid_search_params(
-    #     strat_class=Strat3A,
-    #     file_stub='./data/final_proj/strat_n3A_135',
-    #     search_params=dict(
-    #         sigma_thresh=[-0.5, 0, 0.25, 0.5, 1.],
-    #         window_size=[13, 26, 52, 102]
-    #     ),
-    #     zcb=zcb,
-    #     tenors=[52., 156., 260.],
-    #     capital=10_000_000,
-    #     leverage=5.,
-    # )
+    # Grid search n3A_135
+    grid_search_params(
+        strat_class=Strat3A,
+        file_stub='./data/final_proj/strat_n3A_135',
+        search_params=dict(
+            sigma_thresh=[-0.5, 0, 0.25, 0.5, 1.],
+            window_size=[13, 26, 52, 102]
+        ),
+        zcb=zcb,
+        tenors=[52., 156., 260.],
+        capital=10_000_000,
+        leverage=5.,
+    )
 
     # Grid search p3A_135
     grid_search_params(
